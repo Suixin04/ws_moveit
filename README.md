@@ -185,7 +185,7 @@ roslaunch iiwa7_moveit_config demo.launch
 ![](./figures/rviz_0.png)
 
 # 机械臂控制
-我们已经完成机械臂的配置和导入，接下来，我们将实现机械臂的点位控制和轨迹控制，包括8字形轨迹、椭圆轨迹和螺旋轨迹。
+我们已经完成机械臂的配置和导入，接下来，我们将实现机械臂的点位控制和轨迹控制，包括8字形轨迹、椭圆轨迹和*螺旋轨迹*（或其它控制性能，我觉得实现一个键盘操控+鼠标跟随也是可以的）。
 
 ## 创建控制包
 
@@ -203,6 +203,11 @@ cd iiwa7_control
 mkdir -p scripts
 ```
 
+接下来，我们可以参考[MoveIt Python Interface教程](https://moveit.github.io/moveit_tutorials/doc/move_group_python_interface/move_group_python_interface_tutorial.html)完成任务。
+官方教程十分完善，涉及到很多基础操作和模块。在本项目中，我们会继续指出跟随官方教程可能出现的问题并提出参考解决方案。
+
+我们将参考官方教程示例代码实现具体代码，并将相关功能封装到类（控制器类:`PointControl`）
+
 ## 点位控制
 
 点位控制是指控制机械臂的末端执行器按顺序运动到空间中的多个预定义点位。下面我们实现一个Python脚本，控制机械臂运动到6个不同的空间点位：
@@ -213,210 +218,10 @@ touch scripts/point_control.py
 chmod +x scripts/point_control.py
 ```
 
-在`point_control.py`中实现以下功能：
+在[`point_control.py`](#附录b具体代码)中实现以下功能：
+### 1. 初始化并获取基本信息
+- 
 
-```python
-#!/usr/bin/env python3
-
-import sys
-import copy
-import rospy
-import moveit_commander
-import moveit_msgs.msg
-import geometry_msgs.msg
-from math import pi, sin, cos
-from std_msgs.msg import String
-from moveit_commander.conversions import pose_to_list
-
-
-class Iiwa7Controller:
-    def __init__(self):
-        # 初始化moveit_commander和rospy节点
-        moveit_commander.roscpp_initialize(sys.argv)
-        rospy.init_node('iiwa7_controller', anonymous=True)
-
-        # 实例化RobotCommander对象，提供机器人运动学模型和当前的机器人状态
-        robot = moveit_commander.RobotCommander()
-
-        # 实例化PlanningSceneInterface对象，提供与环境交互的接口
-        scene = moveit_commander.PlanningSceneInterface()
-
-        # 实例化MoveGroupCommander对象，用于控制机器人的规划组
-        group_name = "manipulator"  # 在MoveIt Setup Assistant中创建的规划组名称
-        move_group = moveit_commander.MoveGroupCommander(group_name)
-
-        # 设置规划时间限制为15秒（默认为5秒）
-        move_group.set_planning_time(15.0)
-
-        # 创建DisplayTrajectory发布者，用于显示轨迹
-        display_trajectory_publisher = rospy.Publisher('/move_group/display_planned_path',
-                                                       moveit_msgs.msg.DisplayTrajectory,
-                                                       queue_size=20)
-
-        # 保存引用
-        self.robot = robot
-        self.scene = scene
-        self.move_group = move_group
-        self.display_trajectory_publisher = display_trajectory_publisher
-
-        # 获取规划参考坐标系的名称
-        self.planning_frame = move_group.get_planning_frame()
-        print("============ Planning frame: %s" % self.planning_frame)
-
-        # 获取末端执行器链的名称
-        self.eef_link = move_group.get_end_effector_link()
-        print("============ End effector link: %s" % self.eef_link)
-
-        # 获取机器人的所有组
-        self.group_names = robot.get_group_names()
-        print("============ Available Planning Groups:", self.group_names)
-
-        # 打印机器人当前状态
-        print("============ Printing robot state")
-        print(robot.get_current_state())
-        print("")
-
-    def go_to_joint_state(self, joint_goal):
-        """移动机械臂到指定的关节状态"""
-        # 设置关节目标
-        self.move_group.go(joint_goal, wait=True)
-        # 调用stop()确保没有残留的运动
-        self.move_group.stop()
-        
-        # 检查当前状态与目标状态是否接近
-        current_joints = self.move_group.get_current_joint_values()
-        return self.all_close(joint_goal, current_joints, 0.01)
-
-    def go_to_pose_goal(self, pose_goal):
-        """移动机械臂到指定的位姿"""
-        # 设置位姿目标
-        self.move_group.set_pose_target(pose_goal)
-
-        # 调用规划器进行运动规划和执行
-        plan = self.move_group.go(wait=True)
-        # 确保没有残留的运动
-        self.move_group.stop()
-        # 清除目标位姿
-        self.move_group.clear_pose_targets()
-
-        # 检查当前位姿与目标位姿是否接近
-        current_pose = self.move_group.get_current_pose().pose
-        return self.all_close(pose_goal, current_pose, 0.01)
-
-    def plan_cartesian_path(self, waypoints):
-        """规划笛卡尔路径，通过指定的中间点"""
-        # 使用compute_cartesian_path方法计算路径
-        (plan, fraction) = self.move_group.compute_cartesian_path(
-                                           waypoints,   # 路径点
-                                           0.01,        # eef步长
-                                           0.0)         # 跳跃阈值
-
-        # 返回计算出的轨迹
-        return plan, fraction
-
-    def execute_plan(self, plan):
-        """执行传入的轨迹计划"""
-        self.move_group.execute(plan, wait=True)
-
-    def all_close(self, goal, actual, tolerance):
-        """
-        判断一组关节角度或位姿是否足够接近
-        """
-        all_equal = True
-        if type(goal) is list:
-            for i in range(len(goal)):
-                if abs(actual[i] - goal[i]) > tolerance:
-                    return False
-        elif type(goal) is geometry_msgs.msg.PoseStamped:
-            return self.all_close(goal.pose, actual, tolerance)
-        elif type(goal) is geometry_msgs.msg.Pose:
-            return self.all_close(pose_to_list(goal), pose_to_list(actual), tolerance)
-        return True
-
-    def point_control_demo(self):
-        """点位控制演示：控制机械臂运动到6个不同的空间点"""
-        print("============ 执行点位控制演示")
-        
-        # 创建6个目标位姿
-        pose_goals = []
-        
-        # 目标位姿1：前方伸直
-        pose_goal1 = geometry_msgs.msg.Pose()
-        pose_goal1.orientation.w = 1.0
-        pose_goal1.position.x = 0.4
-        pose_goal1.position.y = 0.0
-        pose_goal1.position.z = 0.6
-        pose_goals.append(pose_goal1)
-        
-        # 目标位姿2：右上方
-        pose_goal2 = geometry_msgs.msg.Pose()
-        pose_goal2.orientation.w = 1.0
-        pose_goal2.position.x = 0.3
-        pose_goal2.position.y = 0.3
-        pose_goal2.position.z = 0.7
-        pose_goals.append(pose_goal2)
-        
-        # 目标位姿3：右下方
-        pose_goal3 = geometry_msgs.msg.Pose()
-        pose_goal3.orientation.w = 1.0
-        pose_goal3.position.x = 0.3
-        pose_goal3.position.y = 0.3
-        pose_goal3.position.z = 0.5
-        pose_goals.append(pose_goal3)
-        
-        # 目标位姿4：左下方
-        pose_goal4 = geometry_msgs.msg.Pose()
-        pose_goal4.orientation.w = 1.0
-        pose_goal4.position.x = 0.3
-        pose_goal4.position.y = -0.3
-        pose_goal4.position.z = 0.5
-        pose_goals.append(pose_goal4)
-        
-        # 目标位姿5：左上方
-        pose_goal5 = geometry_msgs.msg.Pose()
-        pose_goal5.orientation.w = 1.0
-        pose_goal5.position.x = 0.3
-        pose_goal5.position.y = -0.3
-        pose_goal5.position.z = 0.7
-        pose_goals.append(pose_goal5)
-        
-        # 目标位姿6：返回初始位置
-        pose_goal6 = geometry_msgs.msg.Pose()
-        pose_goal6.orientation.w = 1.0
-        pose_goal6.position.x = 0.4
-        pose_goal6.position.y = 0.0
-        pose_goal6.position.z = 0.6
-        pose_goals.append(pose_goal6)
-        
-        # 依次执行6个目标位姿
-        for i, pose_goal in enumerate(pose_goals):
-            print(f"移动到目标位姿 {i+1}")
-            self.go_to_pose_goal(pose_goal)
-            rospy.sleep(1)  # 停顿1秒
-        
-        print("============ 点位控制演示完成!")
-
-def main():
-    try:
-        controller = Iiwa7Controller()
-        
-        # 等待RViz显示
-        print("等待RViz...")
-        rospy.sleep(2)
-        
-        input("按 Enter 键开始点位控制演示...")
-        controller.point_control_demo()
-        
-        print("演示完成!")
-
-    except rospy.ROSInterruptException:
-        return
-    except KeyboardInterrupt:
-        return
-
-if __name__ == "__main__":
-    main()
-```
 
 ## 轨迹控制
 
@@ -430,263 +235,6 @@ chmod +x scripts/trajectory_control.py
 
 在`trajectory_control.py`中实现以下功能：
 
-```python
-#!/usr/bin/env python3
-
-import sys
-import copy
-import rospy
-import moveit_commander
-import moveit_msgs.msg
-import geometry_msgs.msg
-from math import pi, sin, cos, sqrt
-from std_msgs.msg import String
-from moveit_commander.conversions import pose_to_list
-
-
-class Iiwa7Controller:
-    def __init__(self):
-        # 初始化moveit_commander和rospy节点
-        moveit_commander.roscpp_initialize(sys.argv)
-        rospy.init_node('iiwa7_controller', anonymous=True)
-
-        # 实例化RobotCommander对象，提供机器人运动学模型和当前的机器人状态
-        robot = moveit_commander.RobotCommander()
-
-        # 实例化PlanningSceneInterface对象，提供与环境交互的接口
-        scene = moveit_commander.PlanningSceneInterface()
-
-        # 实例化MoveGroupCommander对象，用于控制机器人的规划组
-        group_name = "manipulator"  # 在MoveIt Setup Assistant中创建的规划组名称
-        move_group = moveit_commander.MoveGroupCommander(group_name)
-
-        # 创建DisplayTrajectory发布者，用于显示轨迹
-        display_trajectory_publisher = rospy.Publisher('/move_group/display_planned_path',
-                                                       moveit_msgs.msg.DisplayTrajectory,
-                                                       queue_size=20)
-
-        # 保存引用
-        self.robot = robot
-        self.scene = scene
-        self.move_group = move_group
-        self.display_trajectory_publisher = display_trajectory_publisher
-
-        # 获取规划参考坐标系的名称
-        self.planning_frame = move_group.get_planning_frame()
-        print("============ Planning frame: %s" % self.planning_frame)
-
-        # 获取末端执行器链的名称
-        self.eef_link = move_group.get_end_effector_link()
-        print("============ End effector link: %s" % self.eef_link)
-
-        # 获取机器人的所有组
-        self.group_names = robot.get_group_names()
-        print("============ Available Planning Groups:", self.group_names)
-
-        # 打印机器人当前状态
-        print("============ Printing robot state")
-        print(robot.get_current_state())
-        print("")
-
-    def go_to_pose_goal(self, pose_goal):
-        """移动机械臂到指定的位姿"""
-        # 设置位姿目标
-        self.move_group.set_pose_target(pose_goal)
-
-        # 调用规划器进行运动规划和执行
-        plan = self.move_group.go(wait=True)
-        # 确保没有残留的运动
-        self.move_group.stop()
-        # 清除目标位姿
-        self.move_group.clear_pose_targets()
-
-        # 检查当前位姿与目标位姿是否接近
-        current_pose = self.move_group.get_current_pose().pose
-        return self.all_close(pose_goal, current_pose, 0.01)
-
-    def plan_cartesian_path(self, waypoints):
-        """规划笛卡尔路径，通过指定的中间点"""
-        # 使用compute_cartesian_path方法计算路径
-        (plan, fraction) = self.move_group.compute_cartesian_path(
-                                           waypoints,   # 路径点
-                                           0.01,        # eef步长
-                                           0.0)         # 跳跃阈值
-
-        # 返回计算出的轨迹
-        return plan, fraction
-
-    def execute_plan(self, plan):
-        """执行传入的轨迹计划"""
-        self.move_group.execute(plan, wait=True)
-
-    def all_close(self, goal, actual, tolerance):
-        """
-        判断一组关节角度或位姿是否足够接近
-        """
-        all_equal = True
-        if type(goal) is list:
-            for i in range(len(goal)):
-                if abs(actual[i] - goal[i]) > tolerance:
-                    return False
-        elif type(goal) is geometry_msgs.msg.PoseStamped:
-            return self.all_close(goal.pose, actual, tolerance)
-        elif type(goal) is geometry_msgs.msg.Pose:
-            return self.all_close(pose_to_list(goal), pose_to_list(actual), tolerance)
-        return True
-
-    def go_to_start_pose(self):
-        """移动到轨迹的起始位置"""
-        start_pose = geometry_msgs.msg.Pose()
-        start_pose.orientation.w = 1.0
-        start_pose.position.x = 0.4
-        start_pose.position.y = 0.0
-        start_pose.position.z = 0.5
-        self.go_to_pose_goal(start_pose)
-        return start_pose
-
-    def figure_eight_demo(self, scale=0.1, steps=30):
-        """生成并执行8字形轨迹"""
-        print("============ 执行8字形轨迹演示")
-        
-        # 移动到起始位置
-        start_pose = self.go_to_start_pose()
-        
-        # 创建轨迹点
-        waypoints = []
-        current_pose = copy.deepcopy(start_pose)
-        
-        # 生成8字形轨迹的参数方程点
-        for t in range(steps):
-            theta = 2.0 * pi * t / steps
-            # 参数方程: x = a * sin(t), y = b * sin(t) * cos(t)
-            # 为了生成一个水平的8字形
-            current_pose.position.y = scale * sin(theta)             # y轴方向
-            current_pose.position.z = scale * sin(2*theta) / 2 + 0.5 # z轴方向
-            # 保持x位置不变
-            
-            waypoints.append(copy.deepcopy(current_pose))
-        
-        # 添加起始点闭合轨迹
-        waypoints.append(copy.deepcopy(start_pose))
-        
-        # 规划笛卡尔路径
-        plan, fraction = self.plan_cartesian_path(waypoints)
-        print(f"规划完成: {fraction*100:.2f}% 的路径有效")
-        
-        # 执行轨迹
-        if fraction > 0.5:  # 如果至少50%的路径有效
-            self.execute_plan(plan)
-        else:
-            print("生成的轨迹不足够完整，放弃执行")
-        
-        print("============ 8字形轨迹演示完成!")
-
-    def ellipse_demo(self, a=0.2, b=0.1, steps=50):
-        """生成并执行椭圆轨迹"""
-        print("============ 执行椭圆轨迹演示")
-        
-        # 移动到起始位置
-        start_pose = self.go_to_start_pose()
-        
-        # 创建轨迹点
-        waypoints = []
-        current_pose = copy.deepcopy(start_pose)
-        
-        # 生成椭圆轨迹的参数方程点
-        for t in range(steps):
-            theta = 2.0 * pi * t / steps
-            # 参数方程: x = a * cos(t), y = b * sin(t)
-            # 为了生成一个竖直的椭圆
-            current_pose.position.y = a * cos(theta)         # y轴方向
-            current_pose.position.z = b * sin(theta) + 0.5   # z轴方向加上偏移
-            # 保持x位置不变
-            
-            waypoints.append(copy.deepcopy(current_pose))
-        
-        # 添加起始点闭合轨迹
-        waypoints.append(copy.deepcopy(start_pose))
-        
-        # 规划笛卡尔路径
-        plan, fraction = self.plan_cartesian_path(waypoints)
-        print(f"规划完成: {fraction*100:.2f}% 的路径有效")
-        
-        # 执行轨迹
-        if fraction > 0.5:  # 如果至少50%的路径有效
-            self.execute_plan(plan)
-        else:
-            print("生成的轨迹不足够完整，放弃执行")
-        
-        print("============ 椭圆轨迹演示完成!")
-
-    def spiral_demo(self, radius=0.15, height=0.2, rounds=2, steps=100):
-        """生成并执行螺旋轨迹"""
-        print("============ 执行螺旋轨迹演示")
-        
-        # 移动到起始位置
-        start_pose = self.go_to_start_pose()
-        
-        # 创建轨迹点
-        waypoints = []
-        current_pose = copy.deepcopy(start_pose)
-        
-        # 生成螺旋轨迹点
-        max_angle = 2.0 * pi * rounds
-        for t in range(steps):
-            angle = max_angle * t / steps
-            # 计算螺旋坐标
-            r = radius * (1 - t / steps)  # 半径逐渐减小
-            current_pose.position.y = r * cos(angle)         # y轴方向
-            current_pose.position.z = r * sin(angle) + 0.5   # z轴方向
-            current_pose.position.x = 0.4 + height * t / steps  # x轴向前移动
-            
-            waypoints.append(copy.deepcopy(current_pose))
-        
-        # 规划笛卡尔路径
-        plan, fraction = self.plan_cartesian_path(waypoints)
-        print(f"规划完成: {fraction*100:.2f}% 的路径有效")
-        
-        # 执行轨迹
-        if fraction > 0.5:  # 如果至少50%的路径有效
-            self.execute_plan(plan)
-        else:
-            print("生成的轨迹不足够完整，放弃执行")
-        
-        print("============ 螺旋轨迹演示完成!")
-
-def main():
-    try:
-        controller = Iiwa7Controller()
-        
-        # 等待RViz显示
-        print("等待RViz...")
-        rospy.sleep(2)
-        
-        choice = input("""
-请选择轨迹演示类型:
-1. 8字形轨迹
-2. 椭圆轨迹
-3. 螺旋轨迹
-请输入数字(1-3): """)
-        
-        if choice == '1':
-            controller.figure_eight_demo()
-        elif choice == '2':
-            controller.ellipse_demo()
-        elif choice == '3':
-            controller.spiral_demo()
-        else:
-            print("无效选择，退出程序")
-        
-        print("演示完成!")
-
-    except rospy.ROSInterruptException:
-        return
-    except KeyboardInterrupt:
-        return
-
-if __name__ == "__main__":
-    main()
-```
 
 ## 构建并运行
 
@@ -757,19 +305,38 @@ rosrun iiwa7_control trajectory_control.py
 3. 调整起始位置，确保轨迹在机械臂的工作空间内
 4. 增加规划时间限制（可通过设置move_group的planning_time参数）
 
-```python
-# 设置规划时间限制
-controller.move_group.set_planning_time(10.0)  # 设置为10秒
-```
-
-另外，如果遇到参数不匹配的错误，如：
-```
-Boost.Python.ArgumentError: Python argument types in
-    MoveGroupInterface.compute_cartesian_path(MoveGroupInterface, list, float, float)
-did not match C++ signature:
-```
-
 请确保`compute_cartesian_path`方法包含必要的参数（路径点、步长、跳跃阈值和避免碰撞标志）。
+
+### 笛卡尔路径规划失败或fraction为0（机械臂不动）
+
+如果 `compute_cartesian_path` 返回的 `fraction` 很低（例如0.0）或者机械臂在尝试执行笛卡尔路径时没有移动，即使没有明显错误，也可能存在以下问题：
+
+*   **起始姿态接近奇异点**：许多机械臂（包括iiwa7）在完全伸直或某些特定关节角度组合时会处于奇异状态。在奇异点附近，机械臂的雅可比矩阵会变得病态，导致逆运动学求解困难，从而使得笛卡尔空间下的直线运动规划失败。
+    *   **解决方案**：在开始任何笛卡尔路径规划（如点位控制或复杂轨迹跟踪）之前，建议首先将机械臂通过**关节空间规划**移动到一个已知的、非奇异的"准备"姿态。例如，可以将所有关节移动到微小偏移的非零角度。
+      ```python
+      # 示例：移动到一个初始的非奇异关节姿态 (在您的控制脚本中)
+      # joint_goal = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1] # 根据实际机器人调整
+      # controller.go_to_joint_state(joint_goal) # 假设控制器类中有此方法
+      # rospy.sleep(1) # 等待移动完成
+      ```
+      对于 `README.md` 中给出的 `point_control.py` 或 `trajectory_control.py` 示例，如果遇到此问题，可以在 `point_control_demo` 方法或各个轨迹演示方法（如 `figure_eight_demo`）的**开头**，先调用 `go_to_joint_state` (在`point_control.py`中已定义) 或直接使用 `move_group.go()` 移动到一个合适的初始关节角度，例如：
+      ```python
+      # 在演示方法开头添加：
+      # print("正在移动到初始准备姿态...")
+      # initial_joint_goal = [0.0, 0.2, 0.0, -1.5, 0.0, 1.7, 0.0] # 示例准备姿态，请根据您的机器人调整
+      # self.move_group.go(initial_joint_goal, wait=True)
+      # self.move_group.stop()
+      # rospy.sleep(1)
+      # print("已到达准备姿态。")
+      ```
+      确保这个初始移动本身是成功的。在您和我共同开发的 `point_to_point_control.py` 脚本中，我们正是通过 `go_to_initial_joint_state` 方法实现了这一点，从而确保了后续笛卡尔运动的成功。
+
+*   **目标点不可达或路径上有障碍物**：确保您规划的目标点在机械臂的可达工作空间内，并且路径上没有未知的障碍物（如果启用了碰撞检测）。
+*   **笛卡尔路径本身不可行**：即使目标点可达，但如果要求的直线路径导致机械臂关节超出限制或进入自碰撞，规划也会失败。尝试将路径分解为更小的分段，或允许通过中间点进行关节空间移动。
+*   **规划时间不足**：对于复杂的笛卡尔路径，默认的规划时间可能不够。可以尝试增加规划时间（例如，在 `Iiwa7Controller` 的 `__init__` 方法中，或者在规划前临时设置）：
+    ```python
+    # self.move_group.set_planning_time(15.0) # 增加规划时间
+    ```
 
 # 附录
 ## 附录A：解决mesh文件路径问题
@@ -862,3 +429,284 @@ roslaunch moveit_setup_assistant setup_assistant.launch
 ```
 
 修复后应该可以成功加载机械臂模型。
+
+## 附录B：具体代码
+1. `point_control.py`
+```python
+#!/usr/bin/env python3
+# coding: utf-8
+
+import sys
+import copy
+import rospy
+import moveit_commander
+import moveit_msgs.msg
+import geometry_msgs.msg
+from math import pi, tau
+import numpy as np
+from std_msgs.msg import String
+from moveit_commander.conversions import pose_to_list
+from geometry_msgs.msg import Pose, Point, Quaternion
+
+
+class PointControl:
+    def __init__(self):
+        # 初始化moveit_commander和rospy节点
+        moveit_commander.roscpp_initialize(sys.argv)
+        rospy.init_node('iiwa7_point_to_point_control', anonymous=True)
+
+        # 实例化一个RobotCommander对象，提供有关机器人运动学模型和机器人当前关节状态的信息
+        self.robot = moveit_commander.RobotCommander()
+
+        # 实例化一个PlanningSceneInterface对象，这提供了一个远程接口，用于获取、设置和更新机器人对周围世界的内部理解
+        self.scene = moveit_commander.PlanningSceneInterface()
+
+        # 实例化一个MoveGroupCommander对象，该对象是一个运动规划组（一组关节）的接口。注意我们之前在MoveIt Setup Assistant中配置的“manipulator”组，参数名就是“manipulator”
+        self.move_group = moveit_commander.MoveGroupCommander("manipulator")
+
+        # 创建一个用于发布轨迹的DisplayTrajectory发布者，用于在 Rviz 中显示轨迹
+        self.display_trajectory_publisher = rospy.Publisher(
+            '/move_group/display_planned_path',     # 话题名称
+            moveit_msgs.msg.DisplayTrajectory,      # 消息类型
+            queue_size=20)                          # 队列大小
+
+        # 获取规划参考坐标系的名称
+        self.planning_frame = self.move_group.get_planning_frame()
+        # 获取末端执行器链接的名称
+        self.eef_link = self.move_group.get_end_effector_link()
+        # 获取机器人组的名称
+        self.group_names = self.robot.get_group_names()
+
+        print("============ 机器人参考坐标系: %s" % self.planning_frame)
+        print("============ 末端执行器: %s" % self.eef_link)
+        print("============ 机器人组: %s" % self.group_names)
+        # 启动时打印一次初始状态,一般用于调试
+        initial_state = self.move_group.get_current_state()
+        print("============ 初始当前状态: %s" % initial_state)
+
+    def go_to_joint_state(self, joint_goal_array):
+        """
+        控制机械臂移动到目标关节角度
+        """
+        current_joints = self.move_group.get_current_joint_values()
+        if len(joint_goal_array) != len(current_joints):
+            print(f"错误: 提供的目标关节数 {len(joint_goal_array)} 与实际关节数 {len(current_joints)} 不符")
+            return False
+
+        print(f"当前关节角度: {current_joints}")
+        print(f"目标关节角度: {joint_goal_array}")
+
+        self.move_group.set_joint_value_target(joint_goal_array)
+        
+        # 尝试规划和执行
+        plan_success, plan, planning_time, error_code = self.move_group.plan()
+        if not plan_success:
+            print(f"关节目标规划失败! 错误码: {error_code}")
+            return False
+            
+        print("关节目标规划成功，开始执行...")
+        execute_success = self.move_group.execute(plan, wait=True)
+        
+        self.move_group.stop()
+
+        if not execute_success:
+            print("关节目标执行失败!")
+            return False
+        
+        print("关节目标执行成功。")
+        return True
+
+    def go_to_pose_goal(self, pose_goal):
+        """
+        控制机械臂移动到目标位姿
+        """
+        self.move_group.set_pose_target(pose_goal)
+        success = self.move_group.go(wait=True)
+        self.move_group.stop()
+        self.move_group.clear_pose_targets()
+        return success
+
+    def plan_cartesian_path(self, waypoints):
+        """
+        规划笛卡尔路径
+        """
+        self.move_group.set_max_velocity_scaling_factor(0.1) # 降低速度以增加规划成功率
+        self.move_group.set_max_acceleration_scaling_factor(0.1)
+
+        waypoints_list = []
+        for pose in waypoints:
+            waypoints_list.append(pose)
+        
+        # 恢复到之前在您环境中能够成功规划且无参数错误的调用方式:
+        # (waypoints, eef_step, boolean_flag)
+        # 这里的第三个布尔参数的确切含义对于您环境的绑定是特定的，但它能工作。
+        (plan, fraction) = self.move_group.compute_cartesian_path(
+            waypoints_list,  # 路径点列表 (list of Pose)
+            0.01,            # eef_step (float) - 末端执行器步长
+            True             # 布尔标志 (根据测试，这是您环境中可接受的第三个参数)
+        )
+        return plan, fraction
+
+    def execute_plan(self, plan):
+        """
+        执行规划好的轨迹
+        """
+        return self.move_group.execute(plan, wait=True)
+
+    def run_demo(self):
+        """
+        运行一个简单的空间点位控制演示
+        """
+        # 1. 移动到一个已知的非奇异关节姿态 ("ready" pose)
+        print("============ 移动到初始准备关节姿态 ============")
+        # KUKA LBR iiwa R800/R820 的一个常用准备姿态 (弧度)
+        # [A1, A2, A3, A4, A5, A6, A7]
+        # 这些值需要根据您的具体机器人和应用进行微调
+        ready_joint_angles = [0.0, np.deg2rad(20), 0.0, np.deg2rad(-70), 0.0, np.deg2rad(90), 0.0] 
+        
+        if not self.go_to_joint_state(ready_joint_angles):
+            print("移动到准备姿态失败，演示中止。")
+            return
+        
+        print("成功移动到准备姿态。")
+        rospy.sleep(1.0) # 等待机械臂稳定
+
+        # 2. 获取新的当前姿态
+        try:
+            current_pose = self.move_group.get_current_pose().pose
+            print("============ 新的当前姿态 (关节移动后): %s" % current_pose)
+        except Exception as e:
+            print("获取关节移动后的姿态失败: %s，演示中止。" %e)
+            return
+
+        # 3. 定义基于新姿态的简单路径点
+        waypoints = []
+        scale = 0.1 # 移动幅度 (米)
+
+        # 点1: 从当前位置沿X轴（基坐标系）正向移动
+        target_pose_1 = copy.deepcopy(current_pose)
+        target_pose_1.position.x += scale
+        waypoints.append(copy.deepcopy(target_pose_1))
+
+        # 点2: 从点1位置沿Y轴（基坐标系）正向移动
+        target_pose_2 = copy.deepcopy(target_pose_1)
+        target_pose_2.position.y += scale
+        waypoints.append(copy.deepcopy(target_pose_2))
+        
+        # 点3: 从点2位置沿Z轴（基坐标系）向上移动
+        target_pose_3 = copy.deepcopy(target_pose_2)
+        target_pose_3.position.z += scale
+        waypoints.append(copy.deepcopy(target_pose_3))
+
+
+        print("============ 生成的路径点 ============")
+        for i, p in enumerate(waypoints):
+            print(f"路径点 {i+1}: P({p.position.x:.3f}, {p.position.y:.3f}, {p.position.z:.3f}), "
+                  f"Q({p.orientation.x:.3f}, {p.orientation.y:.3f}, {p.orientation.z:.3f}, {p.orientation.w:.3f})")
+
+        # 4. 规划笛卡尔路径
+        print("============ 规划笛卡尔路径 ============")
+        plan, fraction = self.plan_cartesian_path(waypoints)
+        print("规划成功比例: %.2f" % fraction)
+
+        if fraction < 0.9: # 如果路径规划不完整
+            print("警告: 路径规划不完整 (成功比例 < 0.9)。机械臂可能不会按预期移动。")
+            # 可以选择在此处中止，或者尝试执行部分路径
+            # return 
+
+        # 5. 可视化轨迹 (可选, 但推荐)
+        print("============ 发布轨迹用于Rviz可视化 ============")
+        display_trajectory = moveit_msgs.msg.DisplayTrajectory()
+        display_trajectory.trajectory_start = self.robot.get_current_state()
+        display_trajectory.trajectory.append(plan)
+        self.display_trajectory_publisher.publish(display_trajectory)
+        rospy.sleep(2.0) # 给Rviz一点时间来显示轨迹
+
+        # 6. 执行轨迹
+        print("============ 正在执行轨迹 ============")
+        if fraction > 0.01: # 只在规划到一些路径时才执行
+            success = self.execute_plan(plan)
+            print("轨迹执行 " + ("成功" if success else "失败"))
+        else:
+            print("规划成功比例过低，不执行轨迹。")
+        
+    def custom_point_to_point(self, points):
+        """
+        根据用户提供的点列表执行空间点位控制
+        """
+        # (与run_demo类似，首先确保机器人不在奇异位姿)
+        print("============ 移动到初始准备关节姿态 (自定义点位前) ============")
+        ready_joint_angles = [0.0, np.deg2rad(20), 0.0, np.deg2rad(-70), 0.0, np.deg2rad(90), 0.0]
+        if not self.go_to_joint_state(ready_joint_angles):
+            print("移动到准备姿态失败 (自定义点位)，中止。")
+            return
+        rospy.sleep(1.0)
+
+        waypoints = []
+        for point_data in points:
+            pose = Pose()
+            pose.position.x = point_data[0]
+            pose.position.y = point_data[1]
+            pose.position.z = point_data[2]
+            pose.orientation.x = point_data[3]
+            pose.orientation.y = point_data[4]
+            pose.orientation.z = point_data[5]
+            pose.orientation.w = point_data[6]
+            waypoints.append(copy.deepcopy(pose))
+        
+        print("============ 规划自定义笛卡尔路径 ============")
+        plan, fraction = self.plan_cartesian_path(waypoints)
+        print("规划成功比例: %.2f" % fraction)
+
+        if fraction < 0.9:
+            print("警告: 自定义路径规划不完整 (成功比例 < 0.9)。")
+
+        display_trajectory = moveit_msgs.msg.DisplayTrajectory()
+        display_trajectory.trajectory_start = self.robot.get_current_state()
+        display_trajectory.trajectory.append(plan)
+        self.display_trajectory_publisher.publish(display_trajectory)
+        rospy.sleep(2.0)
+        
+        print("============ 正在执行自定义轨迹 ============")
+        if fraction > 0.01:
+            success = self.execute_plan(plan)
+            print("自定义轨迹执行 " + ("成功" if success else "失败"))
+        else:
+            print("自定义轨迹规划成功比例过低，不执行。")
+
+
+def main():
+    try:
+        controller = PointControl()
+        
+        # 运行演示
+        controller.run_demo()
+        
+        # 示例：自定义点位控制 (在run_demo之后或替代它)
+        # print("\\n============ 开始自定义点位控制测试 ============")
+        # custom_points_data = [
+        #     # 注意：这些点需要基于机器人当前可达的工作空间进行定义
+        #     # 获取run_demo成功后的一个点作为参考
+        #     # current_pose = controller.move_group.get_current_pose().pose
+        #     # ref_x, ref_y, ref_z = current_pose.position.x, current_pose.position.y, current_pose.position.z
+        #     # print(f"参考点: x={ref_x}, y={ref_y}, z={ref_z}")
+        #
+        #     # 示例点 (需要根据您的机器人调整)
+        #     # [ref_x + 0.05, ref_y, ref_z, 0,0,0,1],
+        #     # [ref_x + 0.05, ref_y + 0.05, ref_z, 0,0,0,1],
+        # ]
+        # if custom_points_data: # 仅当有数据时运行
+        #    controller.custom_point_to_point(custom_points_data)
+
+        print("============ 点位控制演示完成 ============")
+        
+    except rospy.ROSInterruptException:
+        return
+    except KeyboardInterrupt:
+        return
+
+
+if __name__ == '__main__':
+    main()
+
+```
