@@ -1,0 +1,1 @@
+/home/zhangtao/workspace/ws_moveit/devel/.private/differentiable-robot-model/share/differentiable-robot-model/cmake/differentiable-robot-modelConfig.cmake

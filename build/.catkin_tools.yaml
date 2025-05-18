@@ -1,0 +1,6 @@
+devel_space: /home/zhangtao/workspace/ws_moveit/devel
+install: false
+install_space: /home/zhangtao/workspace/ws_moveit/install
+profile: default
+source_space: /home/zhangtao/workspace/ws_moveit/src
+workspace: /home/zhangtao/workspace/ws_moveit

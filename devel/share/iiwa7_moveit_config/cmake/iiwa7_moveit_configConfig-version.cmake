@@ -1,0 +1,1 @@
+/home/zhangtao/workspace/ws_moveit/devel/.private/iiwa7_moveit_config/share/iiwa7_moveit_config/cmake/iiwa7_moveit_configConfig-version.cmake

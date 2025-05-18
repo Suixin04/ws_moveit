@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /home/zhangtao/workspace/ws_moveit/devel/.private/differentiable-robot-model/setup.sh

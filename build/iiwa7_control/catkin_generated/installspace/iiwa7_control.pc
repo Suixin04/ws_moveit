@@ -1,0 +1,8 @@
+prefix=/home/zhangtao/workspace/ws_moveit/install
+
+Name: iiwa7_control
+Description: Description of iiwa7_control
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

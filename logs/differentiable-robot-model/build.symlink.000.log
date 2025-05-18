@@ -1,0 +1,3 @@
+Symlinking /home/zhangtao/workspace/ws_moveit/devel/lib/pkgconfig/differentiable-robot-model.pc
+Symlinking /home/zhangtao/workspace/ws_moveit/devel/share/differentiable-robot-model/cmake/differentiable-robot-modelConfig-version.cmake
+Symlinking /home/zhangtao/workspace/ws_moveit/devel/share/differentiable-robot-model/cmake/differentiable-robot-modelConfig.cmake
