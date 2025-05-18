@@ -12,6 +12,8 @@ import numpy as np
 from std_msgs.msg import String
 from moveit_commander.conversions import pose_to_list
 from geometry_msgs.msg import Pose, Point, Quaternion
+from tf.transformations import quaternion_matrix, quaternion_from_euler
+from visualization_msgs.msg import Marker
 
 
 class PointControl:
@@ -43,6 +45,12 @@ class PointControl:
             moveit_msgs.msg.DisplayTrajectory,      # 消息类型
             queue_size=20)                          # 队列大小
 
+        # Publisher for end-effector path markers
+        self.eef_path_marker_publisher = rospy.Publisher(
+            '/eef_trajectory_marker', # Topic name for the markers
+            Marker,
+            queue_size=10)
+
         # 获取规划参考坐标系的名称
         self.planning_frame = self.move_group.get_planning_frame()
         # 获取末端执行器链接的名称
@@ -56,6 +64,7 @@ class PointControl:
         # 启动时打印一次初始状态,一般用于调试
         initial_state = self.move_group.get_current_state()
         rospy.loginfo("============ 初始当前状态: %s" % initial_state)
+
     def move_J(self, joint_goal_array):
         """控制机械臂移动到指定的目标关节角度。
 
@@ -185,6 +194,47 @@ class PointControl:
             rospy.logerr("轨迹执行失败。")
         return success
 
+    def display_eef_path_as_marker(self, waypoints_pose_list):
+        """在RViz中将末端执行器路径显示为LINE_STRIP Marker."""
+        if not waypoints_pose_list:
+            rospy.logwarn("无法显示空的路径点列表作为Marker。")
+            return
+
+        marker = Marker()
+        marker.header.frame_id = self.planning_frame
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "eef_hexagon_path"
+        marker.id = 0 # Unique ID for this marker
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+
+        # Marker的姿态 (对于LINE_STRIP，通常设为单位姿态)
+        marker.pose.orientation.w = 1.0
+
+        # 线条的宽度
+        marker.scale.x = 0.01  # 例如1cm宽
+
+        # 线条的颜色 (红色, RGBA)
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0 # 不透明
+
+        # Marker的生命周期 (rospy.Duration() 表示永久)
+        marker.lifetime = rospy.Duration()
+
+        # 填充路径点
+        for pose_stamped_or_pose in waypoints_pose_list:
+            # waypoints_pose_list包含的是Pose对象
+            p = Point()
+            p.x = pose_stamped_or_pose.position.x
+            p.y = pose_stamped_or_pose.position.y
+            p.z = pose_stamped_or_pose.position.z
+            marker.points.append(p)
+        
+        rospy.loginfo(f"发布包含 {len(marker.points)} 个点的 EEF 路径 Marker 到 /eef_trajectory_marker")
+        self.eef_path_marker_publisher.publish(marker)
+
     def run_demo(self):
         """
         <测试用>
@@ -242,6 +292,9 @@ class PointControl:
             rospy.loginfo(f"路径点 {i+1}: P({p.position.x:.3f}, {p.position.y:.3f}, {p.position.z:.3f}), "
                   f"Q({p.orientation.x:.3f}, {p.orientation.y:.3f}, {p.orientation.z:.3f}, {p.orientation.w:.3f})")
 
+        # 在这里也显示demo的路径点
+        self.display_eef_path_as_marker(waypoints)
+
         # 4. 规划笛卡尔路径
         rospy.loginfo("============ 规划笛卡尔路径 ============")
         plan, fraction = self.plan_cartesian_path(waypoints)
@@ -268,7 +321,7 @@ class PointControl:
         else:
             rospy.loginfo("规划成功比例过低，不执行轨迹。")
         
-    def run(self, points):
+    def run(self):
         """
         根据用户提供的点列表执行空间点位控制
         """
@@ -278,10 +331,72 @@ class PointControl:
         if not self.move_J(ready_joint_angles):
             rospy.logerr("移动到准备姿态失败 (自定义点位)，中止。")
             return
-        rospy.sleep(1.0)
+
+        rospy.loginfo("成功移动到准备姿态。请在Rviz可视化界面观察机械臂姿态，并按回车键继续...")
+        input()
+
+        # 获取当前姿态作为六边形的中心参考
+        hexagon_center_pose_world = None
+        try:
+            current_pose_msg = self.move_group.get_current_pose() # 获取PoseStamped
+            hexagon_center_pose_world = current_pose_msg.pose    # 提取Pose
+            rospy.loginfo(f"当前末端位姿 (将作为六边形参考): "
+                          f"P({hexagon_center_pose_world.position.x:.3f}, "
+                          f"{hexagon_center_pose_world.position.y:.3f}, "
+                          f"{hexagon_center_pose_world.position.z:.3f}), "
+                          f"Q({hexagon_center_pose_world.orientation.x:.3f}, "
+                          f"{hexagon_center_pose_world.orientation.y:.3f}, "
+                          f"{hexagon_center_pose_world.orientation.z:.3f}, "
+                          f"{hexagon_center_pose_world.orientation.w:.3f})")
+        except Exception as e:
+            rospy.logerr(f"获取当前姿态失败: {e}，演示中止。")
+            return
+
+        # 定义六边形参数 (半径)
+        radius = 0.15    # 六边形半径 (米)，也等于边长。
+        
+        # 末端执行器在每个顶点的姿态将与初始获取的姿态一致
+        eef_orientation_quat_msg = hexagon_center_pose_world.orientation
+        eef_orientation_list = [eef_orientation_quat_msg.x, eef_orientation_quat_msg.y, 
+                                eef_orientation_quat_msg.z, eef_orientation_quat_msg.w]
+
+        # 构建从局部坐标系到世界坐标系的变换矩阵
+        # 旋转部分
+        T_world_from_local = quaternion_matrix(eef_orientation_list)
+        # 平移部分 (六边形中心在世界坐标系的位置)
+        T_world_from_local[0,3] = hexagon_center_pose_world.position.x
+        T_world_from_local[1,3] = hexagon_center_pose_world.position.y
+        T_world_from_local[2,3] = hexagon_center_pose_world.position.z
+
+        points_data_list = [] # Renamed from 'points' to avoid confusion with geometry_msgs.msg.Point
+        num_vertices = 6
+        for i in range(num_vertices):
+            angle = (tau / num_vertices) * i  # tau 是 2*pi，角度从0开始
+
+            # 在局部XY平面计算顶点 (六边形中心在局部坐标系原点)
+            x_local = radius * np.cos(angle)
+            y_local = radius * np.sin(angle)
+            z_local = 0.0 # 六边形位于末端执行器的局部XY平面
+
+            p_local_homogeneous = np.array([x_local, y_local, z_local, 1.0])
+            
+            # 转换到世界坐标系
+            p_world_homogeneous = T_world_from_local @ p_local_homogeneous
+            
+            vertex_world_x = p_world_homogeneous[0]
+            vertex_world_y = p_world_homogeneous[1]
+            vertex_world_z = p_world_homogeneous[2]
+            
+            points_data_list.append([vertex_world_x, vertex_world_y, vertex_world_z] + eef_orientation_list)
+
+        # 打印生成的六边形顶点，方便调试
+        rospy.loginfo("============ 生成的六边形顶点数据 ============")
+        for i, p_data in enumerate(points_data_list):
+            rospy.loginfo(f"顶点 {i+1}: P({p_data[0]:.3f}, {p_data[1]:.3f}, {p_data[2]:.3f}), "
+                          f"Q({p_data[3]:.3f}, {p_data[4]:.3f}, {p_data[5]:.3f}, {p_data[6]:.3f})")
 
         waypoints = []
-        for point_data in points:
+        for point_data in points_data_list:
             pose = Pose()
             pose.position.x = point_data[0]
             pose.position.y = point_data[1]
@@ -291,7 +406,22 @@ class PointControl:
             pose.orientation.z = point_data[5]
             pose.orientation.w = point_data[6]
             waypoints.append(copy.deepcopy(pose))
+
+        # 回到初始点points[0]
+        pose = Pose()
+        point_data = points_data_list[0]
+        pose.position.x = point_data[0]
+        pose.position.y = point_data[1]
+        pose.position.z = point_data[2]
+        pose.orientation.x = point_data[3]
+        pose.orientation.y = point_data[4]
+        pose.orientation.z = point_data[5]
+        pose.orientation.w = point_data[6]
+        waypoints.append(copy.deepcopy(pose))
         
+        # 在这里显示自定义路径的Marker
+        self.display_eef_path_as_marker(waypoints) # Call the new method
+
         rospy.loginfo("============ 规划自定义笛卡尔路径 ============")
         plan, fraction = self.plan_cartesian_path(waypoints)
         rospy.loginfo("规划成功比例: %.2f" % fraction)
@@ -318,23 +448,14 @@ def main():
         controller = PointControl()
         
         # 运行演示
-        controller.run_demo()
+        # controller.run_demo()
         
-        # 示例：自定义点位控制 (在run_demo之后或替代它)
-        # print("\\n============ 开始自定义点位控制测试 ============")
-        # custom_points_data = [
-        #     # 注意：这些点需要基于机器人当前可达的工作空间进行定义
-        #     # 获取run_demo成功后的一个点作为参考
-        #     # current_pose = controller.move_group.get_current_pose().pose
-        #     # ref_x, ref_y, ref_z = current_pose.position.x, current_pose.position.y, current_pose.position.z
-        #     # print(f"参考点: x={ref_x}, y={ref_y}, z={ref_z}")
-        #
-        #     # 示例点 (需要根据您的机器人调整)
-        #     # [ref_x + 0.05, ref_y, ref_z, 0,0,0,1],
-        #     # [ref_x + 0.05, ref_y + 0.05, ref_z, 0,0,0,1],
-        # ]
-        # if custom_points_data: # 仅当有数据时运行
-        #    controller.run(custom_points_data)
+        rospy.loginfo("初始化完成，控制器已就绪，按回车键继续...")
+        input()
+        
+        # 自定义点位控制
+        rospy.loginfo("\n============ 开始自定义点位控制测试 ============")
+        controller.run()
 
         rospy.loginfo("============ 点位控制演示完成 ============")
         

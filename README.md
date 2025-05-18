@@ -218,10 +218,52 @@ touch scripts/point_control.py
 chmod +x scripts/point_control.py
 ```
 
-在[`point_control.py`](#附录b具体代码)中实现以下功能：
+在[`point_control.py`](./src/iiwa7_control/scripts/point_control.py)中实现以下功能：
 ### 1. 初始化并获取基本信息
-- 
+- 初始化ROS节点和MoveIt Commander。
+- 获取机器人基本信息，如规划坐标系、末端执行器名称。
+- 创建用于在RViz中可视化MoveIt规划轨迹的Publisher。
 
+### 2. 核心控制方法
+- `go_to_joint_state(joint_goal_array)`: 控制机械臂各关节运动到指定的目标角度。
+- `go_to_pose_goal(pose_goal)`: 控制机械臂末端执行器运动到空间中的目标位姿 (位置和姿态)。
+- `plan_cartesian_path(waypoints)`: 根据给定的路径点列表（`geometry_msgs.msg.Pose`对象），规划笛卡尔空间下的直线运动路径。
+- `execute_plan(plan)`: 执行先前规划好的机器人轨迹。
+
+### 3. 交互式六边形轨迹控制 (基于当前末端姿态)
+`point_control.py` 脚本经过增强，现在支持一个更高级和交互式的演示功能：在空间中绘制一个正六边形。其特点如下：
+
+- **交互式初始位姿确定**:
+    1. 脚本首先会控制机械臂移动到一个预定义的"准备"关节姿态。
+    2. 然后程序会暂停，等待用户在RViz中观察并调整（如果需要，可以通过RViz的交互工具微调目标姿态，尽管脚本本身不直接处理这种外部调整）或仅仅是确认当前末端执行器的位姿。
+    3. 用户按下回车键后，脚本会捕获末端执行器当前的完整世界位姿（包括位置和姿态/朝向）。
+
+- **六边形平面与中心的定义**:
+    - **中心**: 捕获到的末端执行器的世界位置将作为生成六边形的中心点。
+    - **平面朝向**: 捕获到的末端执行器的世界姿态（朝向）将决定六边形所在的平面。这意味着六边形会绘制在末端执行器"前方"的、与其当前朝向对齐的平面上。如果末端执行器是水平的，六边形也是水平的；如果末端执行器是倾斜的，六边形也会相应倾斜。
+    - **顶点计算**: 六边形的顶点首先在末端执行器的局部坐标系（XY平面，Z为0）中计算，然后通过捕获到的世界位姿变换到世界坐标系中。
+
+- **固定姿态与闭合路径**:
+    - **姿态保持**: 在绘制六边形的过程中，末端执行器会尝试保持其在初始捕获时刻的那个姿态。
+    - **路径闭合**: 在经过六边形的6个顶点后，脚本会自动添加第7个路径点，该点与六边形的第1个顶点相同，从而使机械臂的运动轨迹形成一个闭合的六边形。
+
+- **参数可调**:
+    - 六边形的半径 (`radius`) 可以在脚本的 `run()` 方法中方便地修改。
+
+### 4. 路径可视化增强：Marker显示
+为了更清晰地展示期望的末端执行器路径（例如绘制的六边形），除了MoveIt默认的规划路径显示外，`point_control.py` 脚本还增加了以下功能：
+
+- **发布Marker消息**: 脚本会创建一个 `visualization_msgs/Marker` 类型的消息 (具体为 `LINE_STRIP`)，其中包含六边形所有路径点的位置。
+- **Marker话题**: 此Marker消息会发布到 `/eef_trajectory_marker` 话题。
+- **RViz中配置**:
+    1. 在RViz的左侧"Displays"面板中，点击"Add"按钮。
+    2. 选择"Marker"显示类型（通常在 `rviz` 或 `visualization_msgs` 分类下）。
+    3. 选中新添加的"Marker"Display，在其属性中找到"Marker Topic"一项。
+    4. 将其值修改为 `/eef_trajectory_marker`。
+    5. 完成后，您应该能在RViz中看到一条独立的、默认为红色的线状轨迹，精确地描绘出程序计算出的六边形路径点。
+
+### 5. 运行控制
+（运行控制的指令与下方"构建并运行"部分一致，确保先启动 `demo.launch`）
 
 ## 轨迹控制
 
@@ -432,6 +474,11 @@ roslaunch moveit_setup_assistant setup_assistant.launch
 
 ## 附录B：具体代码
 1. `point_control.py`
+   
+   我们项目中实际使用的 `point_control.py` 脚本 (`ws_moveit/src/iiwa7_control/scripts/point_control.py`) 已经包含了上述交互式六边形绘制、Marker可视化等高级功能，其功能比下面这个基础版本更丰富。建议直接参考和运行项目中的实际脚本。
+   
+   以下是一个非常基础的点位控制脚本结构示例，主要用于展示核心API的调用方式。项目中的实际脚本在此基础上进行了大量扩展。
+
 ```python
 #!/usr/bin/env python3
 # coding: utf-8
@@ -447,10 +494,20 @@ import numpy as np
 from std_msgs.msg import String
 from moveit_commander.conversions import pose_to_list
 from geometry_msgs.msg import Pose, Point, Quaternion
+from tf.transformations import quaternion_matrix, quaternion_from_euler
+from visualization_msgs.msg import Marker
 
 
 class PointControl:
     def __init__(self):
+        """初始化Iiwa7PointToPointControl节点和MoveIt! Commander。
+
+        此构造函数负责设置ROS节点、初始化MoveIt!的Python接口
+        (RobotCommander, PlanningSceneInterface, MoveGroupCommander)，
+        并创建一个用于在RViz中可视化轨迹的发布者。
+        同时，它会获取并打印机器人的基本信息，如规划坐标系、
+        末端执行器名称和可用的规划组。
+        """
         # 初始化moveit_commander和rospy节点
         moveit_commander.roscpp_initialize(sys.argv)
         rospy.init_node('iiwa7_point_to_point_control', anonymous=True)
@@ -461,7 +518,7 @@ class PointControl:
         # 实例化一个PlanningSceneInterface对象，这提供了一个远程接口，用于获取、设置和更新机器人对周围世界的内部理解
         self.scene = moveit_commander.PlanningSceneInterface()
 
-        # 实例化一个MoveGroupCommander对象，该对象是一个运动规划组（一组关节）的接口。注意我们之前在MoveIt Setup Assistant中配置的“manipulator”组，参数名就是“manipulator”
+        # 实例化一个MoveGroupCommander对象，该对象是一个运动规划组（一组关节）的接口。注意我们之前在MoveIt Setup Assistant中配置的"manipulator"组，参数名就是"manipulator"
         self.move_group = moveit_commander.MoveGroupCommander("manipulator")
 
         # 创建一个用于发布轨迹的DisplayTrajectory发布者，用于在 Rviz 中显示轨迹
@@ -470,6 +527,12 @@ class PointControl:
             moveit_msgs.msg.DisplayTrajectory,      # 消息类型
             queue_size=20)                          # 队列大小
 
+        # Publisher for end-effector path markers
+        self.eef_path_marker_publisher = rospy.Publisher(
+            '/eef_trajectory_marker', # Topic name for the markers
+            Marker,
+            queue_size=10)
+
         # 获取规划参考坐标系的名称
         self.planning_frame = self.move_group.get_planning_frame()
         # 获取末端执行器链接的名称
@@ -477,106 +540,213 @@ class PointControl:
         # 获取机器人组的名称
         self.group_names = self.robot.get_group_names()
 
-        print("============ 机器人参考坐标系: %s" % self.planning_frame)
-        print("============ 末端执行器: %s" % self.eef_link)
-        print("============ 机器人组: %s" % self.group_names)
+        rospy.loginfo("============ 机器人参考坐标系: %s" % self.planning_frame)
+        rospy.loginfo("============ 末端执行器: %s" % self.eef_link)
+        rospy.loginfo("============ 机器人组: %s" % self.group_names)
         # 启动时打印一次初始状态,一般用于调试
         initial_state = self.move_group.get_current_state()
-        print("============ 初始当前状态: %s" % initial_state)
+        rospy.loginfo("============ 初始当前状态: %s" % initial_state)
 
-    def go_to_joint_state(self, joint_goal_array):
-        """
-        控制机械臂移动到目标关节角度
+    def move_J(self, joint_goal_array):
+        """控制机械臂移动到指定的目标关节角度。
+
+        此方法首先验证输入的目标关节角度数量是否与机器人匹配，
+        然后设置关节目标，规划路径，最后执行规划的轨迹。
+        它会明确区分规划阶段和执行阶段的成功与否，并返回相应的布尔值。
+
+        Args:
+            joint_goal_array (list of float): 一个包含目标关节角度的列表（弧度）。
+                列表的长度必须与机械臂的关节数量一致。
+
+        Returns:
+            bool: 如果规划和执行都成功，则返回True；否则返回False。
         """
         current_joints = self.move_group.get_current_joint_values()
-        if len(joint_goal_array) != len(current_joints):
-            print(f"错误: 提供的目标关节数 {len(joint_goal_array)} 与实际关节数 {len(current_joints)} 不符")
+        if len(joint_goal_array) != len(current_joints):    # 判断给定关节角度是否合理（关节数目）
+            rospy.logerr(f"错误: 提供的目标关节数 {len(joint_goal_array)} 与实际关节数 {len(current_joints)} 不符")
             return False
 
-        print(f"当前关节角度: {current_joints}")
-        print(f"目标关节角度: {joint_goal_array}")
+        rospy.loginfo(f"当前关节角度: {current_joints}")
+        rospy.loginfo(f"目标关节角度: {joint_goal_array}")
 
         self.move_group.set_joint_value_target(joint_goal_array)
         
-        # 尝试规划和执行
+
+        # 直接使用Go函数,但是报错信息不完整，一旦遇到错误，很难定位
+        # success = self.move_group.go(joint_goal_array, wait=True)
+        # self.move_group.stop()
+        # self.move_group.clear_pose_targets()
+        # return success
+
+        # 分别规划和执行
         plan_success, plan, planning_time, error_code = self.move_group.plan()
         if not plan_success:
-            print(f"关节目标规划失败! 错误码: {error_code}")
+            rospy.logerr(f"关节目标规划失败! 错误码: {error_code}")
             return False
             
-        print("关节目标规划成功，开始执行...")
+        rospy.loginfo(f"关节目标规划成功，开始执行...")
         execute_success = self.move_group.execute(plan, wait=True)
         
+        # 确保不出现冗余动作
         self.move_group.stop()
 
         if not execute_success:
-            print("关节目标执行失败!")
+            rospy.logerr("关节目标执行失败!")
             return False
         
-        print("关节目标执行成功。")
+        rospy.loginfo("关节目标执行成功。")
         return True
 
-    def go_to_pose_goal(self, pose_goal):
+    def go_to(self, pose_goal):
+        """控制机械臂的末端执行器移动到指定的目标位姿。
+
+        此方法使用MoveGroupCommander的 `go()` 方法，该方法会尝试规划并执行
+        到目标位姿的运动。执行后会清除目标位姿。
+
+        Args:
+            pose_goal (geometry_msgs.msg.Pose or geometry_msgs.msg.PoseStamped):
+                期望的末端执行器目标位姿。
+
+        Returns:
+            bool: 如果规划和执行成功，则返回True；否则返回False。
         """
-        控制机械臂移动到目标位姿
-        """
+        rospy.loginfo(f"尝试移动到目标位姿: P({pose_goal.position.x:.3f}, {pose_goal.position.y:.3f}, {pose_goal.position.z:.3f}), "
+                      f"Q({pose_goal.orientation.x:.3f}, {pose_goal.orientation.y:.3f}, {pose_goal.orientation.z:.3f}, {pose_goal.orientation.w:.3f})")
         self.move_group.set_pose_target(pose_goal)
         success = self.move_group.go(wait=True)
         self.move_group.stop()
+        # 官方教程建议在实现规划后清除目标
         self.move_group.clear_pose_targets()
+
+        if success:
+            rospy.loginfo("移动到目标位姿成功。")
+        else:
+            rospy.logerr("移动到目标位姿失败。")
         return success
 
     def plan_cartesian_path(self, waypoints):
+        """规划笛卡尔路径，使末端执行器通过一系列指定的空间点。
+
+        此方法尝试计算一个笛卡尔空间（直线运动）的轨迹，该轨迹连接
+        提供的路径点。它会返回计算出的轨迹以及规划成功的路径比例。
+        在规划前，会降低最大速度和加速度以提高规划成功率和运动平滑度。
+
+        Args:
+            waypoints (list of geometry_msgs.msg.Pose): 一个包含一系列
+                `geometry_msgs.msg.Pose` 对象的列表，定义了期望的路径点。
+                机械臂的末端执行器将尝试按顺序通过这些位姿。
+
+        Returns:
+            tuple: 一个包含两个元素的元组:
+                - plan (moveit_msgs.msg.RobotTrajectory): 计算出的机器人轨迹。
+                  如果规划失败或部分成功，这可能是一个空的或部分的轨迹。
+                - fraction (float): 一个介于0.0和1.0之间的浮点数，表示
+                  成功规划的路径段的比例。例如，0.9表示90%的请求路径
+                  已成功规划。值越接近1.0越好。
         """
-        规划笛卡尔路径
-        """
-        self.move_group.set_max_velocity_scaling_factor(0.1) # 降低速度以增加规划成功率
+        # 设置较低的最大速度和加速度缩放因子，以提高规划成功率和运动平滑度
+        self.move_group.set_max_velocity_scaling_factor(0.1)
         self.move_group.set_max_acceleration_scaling_factor(0.1)
 
         waypoints_list = []
-        for pose in waypoints:
-            waypoints_list.append(pose)
+        waypoints_list = copy.deepcopy(waypoints)
         
-        # 恢复到之前在您环境中能够成功规划且无参数错误的调用方式:
-        # (waypoints, eef_step, boolean_flag)
-        # 这里的第三个布尔参数的确切含义对于您环境的绑定是特定的，但它能工作。
         (plan, fraction) = self.move_group.compute_cartesian_path(
             waypoints_list,  # 路径点列表 (list of Pose)
-            0.01,            # eef_step (float) - 末端执行器步长
-            True             # 布尔标志 (根据测试，这是您环境中可接受的第三个参数)
+            0.01,            # eef_step (float) - 末端执行器步长，用于控制路径的平滑度
         )
+        rospy.loginfo(f"笛卡尔路径规划完成，成功比例: {fraction:.2f}")
         return plan, fraction
 
     def execute_plan(self, plan):
+        """执行一个先前规划好的机器人轨迹。
+
+        Args:
+            plan (moveit_msgs.msg.RobotTrajectory): 要执行的机器人轨迹，
+                通常由 `plan_cartesian_path` 或 `move_group.plan()` 返回。
+
+        Returns:
+            bool: 如果轨迹执行成功，则返回True；否则返回False。
         """
-        执行规划好的轨迹
-        """
-        return self.move_group.execute(plan, wait=True)
+        rospy.loginfo("开始执行规划的轨迹...")
+        success = self.move_group.execute(plan, wait=True)
+        if success:
+            rospy.loginfo("轨迹执行成功。")
+        else:
+            rospy.logerr("轨迹执行失败。")
+        return success
+
+    def display_eef_path_as_marker(self, waypoints_pose_list):
+        """在RViz中将末端执行器路径显示为LINE_STRIP Marker."""
+        if not waypoints_pose_list:
+            rospy.logwarn("无法显示空的路径点列表作为Marker。")
+            return
+
+        marker = Marker()
+        marker.header.frame_id = self.planning_frame
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "eef_hexagon_path"
+        marker.id = 0 # Unique ID for this marker
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+
+        # Marker的姿态 (对于LINE_STRIP，通常设为单位姿态)
+        marker.pose.orientation.w = 1.0
+
+        # 线条的宽度
+        marker.scale.x = 0.01  # 例如1cm宽
+
+        # 线条的颜色 (红色, RGBA)
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0 # 不透明
+
+        # Marker的生命周期 (rospy.Duration() 表示永久)
+        marker.lifetime = rospy.Duration()
+
+        # 填充路径点
+        for pose_stamped_or_pose in waypoints_pose_list:
+            # waypoints_pose_list包含的是Pose对象
+            p = Point()
+            p.x = pose_stamped_or_pose.position.x
+            p.y = pose_stamped_or_pose.position.y
+            p.z = pose_stamped_or_pose.position.z
+            marker.points.append(p)
+        
+        rospy.loginfo(f"发布包含 {len(marker.points)} 个点的 EEF 路径 Marker 到 /eef_trajectory_marker")
+        self.eef_path_marker_publisher.publish(marker)
 
     def run_demo(self):
         """
+        <测试用>
+
         运行一个简单的空间点位控制演示
         """
         # 1. 移动到一个已知的非奇异关节姿态 ("ready" pose)
-        print("============ 移动到初始准备关节姿态 ============")
-        # KUKA LBR iiwa R800/R820 的一个常用准备姿态 (弧度)
+        rospy.loginfo("============ 移动到初始准备关节姿态 ============")
+        # KUKA LBR iiwa R800/R820 的一个常用准备姿态 (弧度)，
         # [A1, A2, A3, A4, A5, A6, A7]
-        # 这些值需要根据您的具体机器人和应用进行微调
-        ready_joint_angles = [0.0, np.deg2rad(20), 0.0, np.deg2rad(-70), 0.0, np.deg2rad(90), 0.0] 
+        # 我们可以先在Rviz可视化界面手动调整一个合适的姿态，将关节角度值记录下来
+        ready_joint_angles = [0.0, np.deg2rad(20), 0.0, np.deg2rad(-70), 0.0, np.deg2rad(90), 0.0]
+
         
-        if not self.go_to_joint_state(ready_joint_angles):
-            print("移动到准备姿态失败，演示中止。")
+        
+        if not self.move_J(ready_joint_angles):
+            rospy.logerr("移动到准备姿态失败，演示中止。")
             return
+        # 中断，观察可视化界面，直到用户回车
+        rospy.loginfo("成功移动到准备姿态。请在Rviz可视化界面观察机械臂姿态，并按回车键继续...")
+        input()
         
-        print("成功移动到准备姿态。")
         rospy.sleep(1.0) # 等待机械臂稳定
 
         # 2. 获取新的当前姿态
         try:
             current_pose = self.move_group.get_current_pose().pose
-            print("============ 新的当前姿态 (关节移动后): %s" % current_pose)
+            rospy.loginfo("============ 新的当前姿态 (关节移动后): %s" % current_pose)
         except Exception as e:
-            print("获取关节移动后的姿态失败: %s，演示中止。" %e)
+            rospy.logerr("获取关节移动后的姿态失败: %s，演示中止。" %e)
             return
 
         # 3. 定义基于新姿态的简单路径点
@@ -599,23 +769,26 @@ class PointControl:
         waypoints.append(copy.deepcopy(target_pose_3))
 
 
-        print("============ 生成的路径点 ============")
+        rospy.loginfo("============ 生成的路径点 ============")
         for i, p in enumerate(waypoints):
-            print(f"路径点 {i+1}: P({p.position.x:.3f}, {p.position.y:.3f}, {p.position.z:.3f}), "
+            rospy.loginfo(f"路径点 {i+1}: P({p.position.x:.3f}, {p.position.y:.3f}, {p.position.z:.3f}), "
                   f"Q({p.orientation.x:.3f}, {p.orientation.y:.3f}, {p.orientation.z:.3f}, {p.orientation.w:.3f})")
 
+        # 在这里也显示demo的路径点
+        self.display_eef_path_as_marker(waypoints)
+
         # 4. 规划笛卡尔路径
-        print("============ 规划笛卡尔路径 ============")
+        rospy.loginfo("============ 规划笛卡尔路径 ============")
         plan, fraction = self.plan_cartesian_path(waypoints)
-        print("规划成功比例: %.2f" % fraction)
+        rospy.loginfo("规划成功比例: %.2f" % fraction)
 
         if fraction < 0.9: # 如果路径规划不完整
-            print("警告: 路径规划不完整 (成功比例 < 0.9)。机械臂可能不会按预期移动。")
+            rospy.logwarn("警告: 路径规划不完整 (成功比例 < 0.9)。机械臂可能不会按预期移动。")
             # 可以选择在此处中止，或者尝试执行部分路径
             # return 
 
         # 5. 可视化轨迹 (可选, 但推荐)
-        print("============ 发布轨迹用于Rviz可视化 ============")
+        rospy.loginfo("============ 发布轨迹用于Rviz可视化 ============")
         display_trajectory = moveit_msgs.msg.DisplayTrajectory()
         display_trajectory.trajectory_start = self.robot.get_current_state()
         display_trajectory.trajectory.append(plan)
@@ -623,27 +796,89 @@ class PointControl:
         rospy.sleep(2.0) # 给Rviz一点时间来显示轨迹
 
         # 6. 执行轨迹
-        print("============ 正在执行轨迹 ============")
+        rospy.loginfo("============ 正在执行轨迹 ============")
         if fraction > 0.01: # 只在规划到一些路径时才执行
             success = self.execute_plan(plan)
-            print("轨迹执行 " + ("成功" if success else "失败"))
+            rospy.loginfo("轨迹执行 " + ("成功" if success else "失败"))
         else:
-            print("规划成功比例过低，不执行轨迹。")
+            rospy.loginfo("规划成功比例过低，不执行轨迹。")
         
-    def custom_point_to_point(self, points):
+    def run(self):
         """
         根据用户提供的点列表执行空间点位控制
         """
         # (与run_demo类似，首先确保机器人不在奇异位姿)
-        print("============ 移动到初始准备关节姿态 (自定义点位前) ============")
+        rospy.loginfo("============ 移动到初始准备关节姿态 (自定义点位前) ============")
         ready_joint_angles = [0.0, np.deg2rad(20), 0.0, np.deg2rad(-70), 0.0, np.deg2rad(90), 0.0]
-        if not self.go_to_joint_state(ready_joint_angles):
-            print("移动到准备姿态失败 (自定义点位)，中止。")
+        if not self.move_J(ready_joint_angles):
+            rospy.logerr("移动到准备姿态失败 (自定义点位)，中止。")
             return
-        rospy.sleep(1.0)
+
+        rospy.loginfo("成功移动到准备姿态。请在Rviz可视化界面观察机械臂姿态，并按回车键继续...")
+        input()
+
+        # 获取当前姿态作为六边形的中心参考
+        hexagon_center_pose_world = None
+        try:
+            current_pose_msg = self.move_group.get_current_pose() # 获取PoseStamped
+            hexagon_center_pose_world = current_pose_msg.pose    # 提取Pose
+            rospy.loginfo(f"当前末端位姿 (将作为六边形参考): "
+                          f"P({hexagon_center_pose_world.position.x:.3f}, "
+                          f"{hexagon_center_pose_world.position.y:.3f}, "
+                          f"{hexagon_center_pose_world.position.z:.3f}), "
+                          f"Q({hexagon_center_pose_world.orientation.x:.3f}, "
+                          f"{hexagon_center_pose_world.orientation.y:.3f}, "
+                          f"{hexagon_center_pose_world.orientation.z:.3f}, "
+                          f"{hexagon_center_pose_world.orientation.w:.3f})")
+        except Exception as e:
+            rospy.logerr(f"获取当前姿态失败: {e}，演示中止。")
+            return
+
+        # 定义六边形参数 (半径)
+        radius = 0.15    # 六边形半径 (米)，也等于边长。
+        
+        # 末端执行器在每个顶点的姿态将与初始获取的姿态一致
+        eef_orientation_quat_msg = hexagon_center_pose_world.orientation
+        eef_orientation_list = [eef_orientation_quat_msg.x, eef_orientation_quat_msg.y, 
+                                eef_orientation_quat_msg.z, eef_orientation_quat_msg.w]
+
+        # 构建从局部坐标系到世界坐标系的变换矩阵
+        # 旋转部分
+        T_world_from_local = quaternion_matrix(eef_orientation_list)
+        # 平移部分 (六边形中心在世界坐标系的位置)
+        T_world_from_local[0,3] = hexagon_center_pose_world.position.x
+        T_world_from_local[1,3] = hexagon_center_pose_world.position.y
+        T_world_from_local[2,3] = hexagon_center_pose_world.position.z
+
+        points_data_list = [] # Renamed from 'points' to avoid confusion with geometry_msgs.msg.Point
+        num_vertices = 6
+        for i in range(num_vertices):
+            angle = (tau / num_vertices) * i  # tau 是 2*pi，角度从0开始
+
+            # 在局部XY平面计算顶点 (六边形中心在局部坐标系原点)
+            x_local = radius * np.cos(angle)
+            y_local = radius * np.sin(angle)
+            z_local = 0.0 # 六边形位于末端执行器的局部XY平面
+
+            p_local_homogeneous = np.array([x_local, y_local, z_local, 1.0])
+            
+            # 转换到世界坐标系
+            p_world_homogeneous = T_world_from_local @ p_local_homogeneous
+            
+            vertex_world_x = p_world_homogeneous[0]
+            vertex_world_y = p_world_homogeneous[1]
+            vertex_world_z = p_world_homogeneous[2]
+            
+            points_data_list.append([vertex_world_x, vertex_world_y, vertex_world_z] + eef_orientation_list)
+
+        # 打印生成的六边形顶点，方便调试
+        rospy.loginfo("============ 生成的六边形顶点数据 ============")
+        for i, p_data in enumerate(points_data_list):
+            rospy.loginfo(f"顶点 {i+1}: P({p_data[0]:.3f}, {p_data[1]:.3f}, {p_data[2]:.3f}), "
+                          f"Q({p_data[3]:.3f}, {p_data[4]:.3f}, {p_data[5]:.3f}, {p_data[6]:.3f})")
 
         waypoints = []
-        for point_data in points:
+        for point_data in points_data_list:
             pose = Pose()
             pose.position.x = point_data[0]
             pose.position.y = point_data[1]
@@ -653,13 +888,28 @@ class PointControl:
             pose.orientation.z = point_data[5]
             pose.orientation.w = point_data[6]
             waypoints.append(copy.deepcopy(pose))
+
+        # 回到初始点points[0]
+        pose = Pose()
+        point_data = points_data_list[0]
+        pose.position.x = point_data[0]
+        pose.position.y = point_data[1]
+        pose.position.z = point_data[2]
+        pose.orientation.x = point_data[3]
+        pose.orientation.y = point_data[4]
+        pose.orientation.z = point_data[5]
+        pose.orientation.w = point_data[6]
+        waypoints.append(copy.deepcopy(pose))
         
-        print("============ 规划自定义笛卡尔路径 ============")
+        # 在这里显示自定义路径的Marker
+        self.display_eef_path_as_marker(waypoints) # Call the new method
+
+        rospy.loginfo("============ 规划自定义笛卡尔路径 ============")
         plan, fraction = self.plan_cartesian_path(waypoints)
-        print("规划成功比例: %.2f" % fraction)
+        rospy.loginfo("规划成功比例: %.2f" % fraction)
 
         if fraction < 0.9:
-            print("警告: 自定义路径规划不完整 (成功比例 < 0.9)。")
+            rospy.logwarn("警告: 自定义路径规划不完整 (成功比例 < 0.9)。")
 
         display_trajectory = moveit_msgs.msg.DisplayTrajectory()
         display_trajectory.trajectory_start = self.robot.get_current_state()
@@ -667,12 +917,12 @@ class PointControl:
         self.display_trajectory_publisher.publish(display_trajectory)
         rospy.sleep(2.0)
         
-        print("============ 正在执行自定义轨迹 ============")
+        rospy.loginfo("============ 正在执行自定义轨迹 ============")
         if fraction > 0.01:
             success = self.execute_plan(plan)
-            print("自定义轨迹执行 " + ("成功" if success else "失败"))
+            rospy.loginfo("自定义轨迹执行 " + ("成功" if success else "失败"))
         else:
-            print("自定义轨迹规划成功比例过低，不执行。")
+            rospy.loginfo("自定义轨迹规划成功比例过低，不执行。")
 
 
 def main():
@@ -680,25 +930,16 @@ def main():
         controller = PointControl()
         
         # 运行演示
-        controller.run_demo()
+        # controller.run_demo()
         
-        # 示例：自定义点位控制 (在run_demo之后或替代它)
-        # print("\\n============ 开始自定义点位控制测试 ============")
-        # custom_points_data = [
-        #     # 注意：这些点需要基于机器人当前可达的工作空间进行定义
-        #     # 获取run_demo成功后的一个点作为参考
-        #     # current_pose = controller.move_group.get_current_pose().pose
-        #     # ref_x, ref_y, ref_z = current_pose.position.x, current_pose.position.y, current_pose.position.z
-        #     # print(f"参考点: x={ref_x}, y={ref_y}, z={ref_z}")
-        #
-        #     # 示例点 (需要根据您的机器人调整)
-        #     # [ref_x + 0.05, ref_y, ref_z, 0,0,0,1],
-        #     # [ref_x + 0.05, ref_y + 0.05, ref_z, 0,0,0,1],
-        # ]
-        # if custom_points_data: # 仅当有数据时运行
-        #    controller.custom_point_to_point(custom_points_data)
+        rospy.loginfo("初始化完成，控制器已就绪，按回车键继续...")
+        input()
+        
+        # 自定义点位控制
+        rospy.loginfo("\n============ 开始自定义点位控制测试 ============")
+        controller.run()
 
-        print("============ 点位控制演示完成 ============")
+        rospy.loginfo("============ 点位控制演示完成 ============")
         
     except rospy.ROSInterruptException:
         return
@@ -708,5 +949,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 ```
