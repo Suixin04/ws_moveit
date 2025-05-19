@@ -225,13 +225,13 @@ chmod +x scripts/point_control.py
 - 创建用于在RViz中可视化MoveIt规划轨迹的Publisher。
 
 ### 2. 核心控制方法
-- `go_to_joint_state(joint_goal_array)`: 控制机械臂各关节运动到指定的目标角度。
-- `go_to_pose_goal(pose_goal)`: 控制机械臂末端执行器运动到空间中的目标位姿 (位置和姿态)。
+- `move_J(joint_goal_array)`: 控制机械臂各关节运动到指定的目标角度。
+- `go_to(pose_goal)`: 控制机械臂末端执行器运动到空间中的目标位姿 (位置和姿态)。
 - `plan_cartesian_path(waypoints)`: 根据给定的路径点列表（`geometry_msgs.msg.Pose`对象），规划笛卡尔空间下的直线运动路径。
 - `execute_plan(plan)`: 执行先前规划好的机器人轨迹。
 
 ### 3. 交互式六边形轨迹控制 (基于当前末端姿态)
-`point_control.py` 脚本经过增强，现在支持一个更高级和交互式的演示功能：在空间中绘制一个正六边形。其特点如下：
+`point_control.py` 脚本在空间中绘制一个正六边形。其特点如下：
 
 - **交互式初始位姿确定**:
     1. 脚本首先会控制机械臂移动到一个预定义的"准备"关节姿态。
@@ -251,7 +251,7 @@ chmod +x scripts/point_control.py
     - 六边形的半径 (`radius`) 可以在脚本的 `run()` 方法中方便地修改。
 
 ### 4. 路径可视化增强：Marker显示
-为了更清晰地展示期望的末端执行器路径（例如绘制的六边形），除了MoveIt默认的规划路径显示外，`point_control.py` 脚本还增加了以下功能：
+为了更清晰地展示期望的末端执行器路径（例如绘制的六边形），除了MoveIt默认的规划路径显示外，`point_control.py` 还增加了以下功能：
 
 - **发布Marker消息**: 脚本会创建一个 `visualization_msgs/Marker` 类型的消息 (具体为 `LINE_STRIP`)，其中包含六边形所有路径点的位置。
 - **Marker话题**: 此Marker消息会发布到 `/eef_trajectory_marker` 话题。
@@ -260,7 +260,7 @@ chmod +x scripts/point_control.py
     2. 选择"Marker"显示类型（通常在 `rviz` 或 `visualization_msgs` 分类下）。
     3. 选中新添加的"Marker"Display，在其属性中找到"Marker Topic"一项。
     4. 将其值修改为 `/eef_trajectory_marker`。
-    5. 完成后，您应该能在RViz中看到一条独立的、默认为红色的线状轨迹，精确地描绘出程序计算出的六边形路径点。
+    5. 完成后，应该能在RViz中看到一条独立的、默认为红色的线状轨迹，精确地描绘出程序计算出的六边形路径点。
 
 ### 5. 运行控制
 （运行控制的指令与下方"构建并运行"部分一致，确保先启动 `demo.launch`）
@@ -356,24 +356,12 @@ rosrun iiwa7_control trajectory_control.py
 *   **起始姿态接近奇异点**：许多机械臂（包括iiwa7）在完全伸直或某些特定关节角度组合时会处于奇异状态。在奇异点附近，机械臂的雅可比矩阵会变得病态，导致逆运动学求解困难，从而使得笛卡尔空间下的直线运动规划失败。
     *   **解决方案**：在开始任何笛卡尔路径规划（如点位控制或复杂轨迹跟踪）之前，建议首先将机械臂通过**关节空间规划**移动到一个已知的、非奇异的"准备"姿态。例如，可以将所有关节移动到微小偏移的非零角度。
       ```python
-      # 示例：移动到一个初始的非奇异关节姿态 (在您的控制脚本中)
-      # joint_goal = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1] # 根据实际机器人调整
-      # controller.go_to_joint_state(joint_goal) # 假设控制器类中有此方法
-      # rospy.sleep(1) # 等待移动完成
+      # 示例：移动到一个初始的非奇异关节姿态 (在控制脚本中)
+      joint_goal = [0.0, np.deg2rad(20), 0.0, np.deg2rad(-70), 0.0, np.deg2rad(90), 0.0]
+      controller.move_J(joint_goal)
       ```
-      对于 `README.md` 中给出的 `point_control.py` 或 `trajectory_control.py` 示例，如果遇到此问题，可以在 `point_control_demo` 方法或各个轨迹演示方法（如 `figure_eight_demo`）的**开头**，先调用 `go_to_joint_state` (在`point_control.py`中已定义) 或直接使用 `move_group.go()` 移动到一个合适的初始关节角度，例如：
-      ```python
-      # 在演示方法开头添加：
-      # print("正在移动到初始准备姿态...")
-      # initial_joint_goal = [0.0, 0.2, 0.0, -1.5, 0.0, 1.7, 0.0] # 示例准备姿态，请根据您的机器人调整
-      # self.move_group.go(initial_joint_goal, wait=True)
-      # self.move_group.stop()
-      # rospy.sleep(1)
-      # print("已到达准备姿态。")
-      ```
-      确保这个初始移动本身是成功的。在您和我共同开发的 `point_to_point_control.py` 脚本中，我们正是通过 `go_to_initial_joint_state` 方法实现了这一点，从而确保了后续笛卡尔运动的成功。
 
-*   **目标点不可达或路径上有障碍物**：确保您规划的目标点在机械臂的可达工作空间内，并且路径上没有未知的障碍物（如果启用了碰撞检测）。
+*   **目标点不可达或路径上有障碍物**：确保规划的目标点在机械臂的可达工作空间内，并且路径上没有未知的障碍物（如果启用了碰撞检测）。
 *   **笛卡尔路径本身不可行**：即使目标点可达，但如果要求的直线路径导致机械臂关节超出限制或进入自碰撞，规划也会失败。尝试将路径分解为更小的分段，或允许通过中间点进行关节空间移动。
 *   **规划时间不足**：对于复杂的笛卡尔路径，默认的规划时间可能不够。可以尝试增加规划时间（例如，在 `Iiwa7Controller` 的 `__init__` 方法中，或者在规划前临时设置）：
     ```python
