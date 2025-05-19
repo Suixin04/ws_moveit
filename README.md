@@ -683,7 +683,7 @@ joint_state_controller:
     *   **作用对象**: 这些增益是为 `ros_control` 框架中的上层控制器（在此例中是 `position_controllers/JointTrajectoryController`，即 `iiwa_arm_controller`）配置的。
     *   **控制目标**: `JointTrajectoryController` 负责接收一个期望的关节轨迹（包含时间戳、位置、可能还有速度和加速度），并根据这条轨迹计算出在每个控制周期应该发送给"底层硬件"（在仿真中即 `gazebo_ros_control` 插件）的指令。对于 `PositionJointInterface`，它会发送期望的关节位置。
     *   **影响**: 这组 `gains` 主要影响 `JointTrajectoryController` 如何跟踪输入的目标轨迹，如何平滑地在轨迹段之间过渡，以及如何响应跟踪误差来生成这些发送给底层的指令。如果底层（Gazebo的PID）已经能很好地跟踪位置，这组参数的影响可能不那么直接，但对于整体轨迹的平顺性和动态响应仍有作用。
-    *   **注释中的 `i: 1`**: 在你当前 `README.md` 示例的 `iiwa_arm_controller` 的 `gains` 中，`i`（积分项）被设为 `1`。在实际的 `controllers.yaml` 文件中，我们已经将其设为 `0`。通常建议将积分项设为 `0` 开始调试，以避免积分饱和问题，尤其是在位置控制模式下。
+    *   **注释中的 `i: 1`**: 在 `README.md` 示例的 `iiwa_arm_controller` 的 `gains` 中，`i`（积分项）被设为 `1`。在实际的 `controllers.yaml` 文件中，我们已经将其设为 `0`。通常建议将积分项设为 `0` 开始调试，以避免积分饱和问题，尤其是在位置控制模式下。
 
 2.  **`gazebo_ros_control/pid_gains`**:
     *   **作用对象**: 这些 `pid_gains` 是专门为 Gazebo 中的 `gazebo_ros_control` 插件配置的。
