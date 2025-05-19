@@ -262,9 +262,9 @@ class TrajectoryControl:
         #    避免从奇异姿态开始规划笛卡尔路径
         rospy.loginfo("--> 移动到准备姿态...")
         # 一个常用的iiwa准备姿态 (弧度)
-        ready_joint_angles = [0.0, np.deg2rad(15), 0.0, np.deg2rad(-75), 0.0, np.deg2rad(90), 0.0]
+        ready_joint_angles = [0.0, np.deg2rad(-15), 0.0, np.deg2rad(-90), 0.0, np.deg2rad(90), 0.0]
         if not self.move_J(ready_joint_angles):
-            rospy.logerr("移动到准备姿态失败，演示中止。")
+            rospy.logerr("移动到准备姿态失败 (自定义点位)，中止。")
             return
         rospy.loginfo("准备姿态完成。")
         
@@ -287,6 +287,13 @@ class TrajectoryControl:
             rospy.logwarn(f"8字形轨迹规划不完整 (fraction: {fraction:.2f})，可能无法完全执行。")
             # 可以放宽裕度，比如fraction > 0.1
         
+        # 添加执行步骤
+        if plan and fraction > 0.5: # 仅当规划部分成功时才执行
+            rospy.loginfo("开始执行8字形轨迹...")
+            self.execute_plan(plan)
+        else:
+            rospy.logerr(f"8字形轨迹规划失败或成功率过低 (fraction: {fraction:.2f})，不执行。")
+
         rospy.loginfo("8字形轨迹演示完成。")
         rospy.loginfo("按回车键继续...")
         input()
@@ -310,6 +317,13 @@ class TrajectoryControl:
         plan, fraction = self.plan_cartesian_path(ellipse_waypoints)
         if fraction < 0.9:
             rospy.logwarn(f"椭圆轨迹规划不完整 (fraction: {fraction:.2f})，可能无法完全执行。")
+
+        # 添加执行步骤
+        if plan and fraction > 0.5: # 仅当规划部分成功时才执行
+            rospy.loginfo("开始执行椭圆轨迹...")
+            self.execute_plan(plan)
+        else:
+            rospy.logerr(f"椭圆轨迹规划失败或成功率过低 (fraction: {fraction:.2f})，不执行。")
 
         rospy.loginfo("椭圆轨迹演示完成。")
         rospy.loginfo("按回车键继续...")
