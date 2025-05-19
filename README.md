@@ -277,6 +277,47 @@ chmod +x scripts/trajectory_control.py
 
 在`trajectory_control.py`中实现以下功能：
 
+### 1. 初始化与通用控制方法
+类似于`point_control.py`，`trajectory_control.py`中的`TrajectoryControl`类会初始化ROS节点和MoveIt!相关组件（`RobotCommander`, `PlanningSceneInterface`, `MoveGroupCommander`）。它提供了基础的运动控制方法：
+- `move_J(joint_goal_array)`: 控制机械臂各关节运动到指定的目标角度。
+- `plan_cartesian_path(waypoints)`: 根据给定的路径点列表，规划笛卡尔空间下的直线运动路径。
+- `execute_plan(plan)`: 执行先前规划好的机器人轨迹。
+- `clear_markers(ns)`: 清除RViz中指定命名空间（namespace）下的所有可视化标记 (Markers)。
+- `show_trajectory_marker(waypoints_pose_list, ns, r, g, b)`: 在RViz中将指定路径点显示为彩色线条 Marker。在绘制新标记前，会自动调用`clear_markers(ns)`清除同一命名空间下的旧标记，方便调试不同轨迹。
+
+### 2. 轨迹生成与执行
+
+脚本的核心功能是生成并执行特定的几何轨迹。
+
+- **通用准备姿态**: 在执行任何轨迹前，脚本会首先尝试将机械臂移动到一个预定义的、非奇异的"准备"关节姿态。这有助于提高后续笛卡尔路径规划的成功率。
+- **获取轨迹中心**: 移动到准备姿态后，会获取当前末端执行器的位姿，该位姿将作为后续轨迹生成的中心参考点。
+
+#### a. 8字形轨迹 (Figure-Eight Trajectory)
+- **生成**: `generate_figure_eight_trajectory(scale, steps, center_pose)` 方法使用参数方程生成8字形轨迹的路径点。轨迹默认在以`center_pose`的位置为中心、X坐标固定（即在与机器人基座的YZ平面大致平行的平面上）绘制，并保持`center_pose`的姿态。参数方程（简化形式，theta 从 0 到 2*pi）：
+  - `y_local = scale * sin(theta)`
+  - `z_local = scale * sin(2*theta) / 2.0`
+  这些局部偏移量会加到`center_pose`的对应坐标上。
+- **可视化**: 生成的路径点会通过`show_trajectory_marker`以特定颜色（如橙色）发布到RViz中。
+- **执行**: 使用`plan_cartesian_path`规划路径，如果规划成功率（`fraction`）达到一定阈值，则通过`execute_plan`执行。
+
+#### b. 椭圆轨迹 (Ellipse Trajectory)
+- **生成**: `generate_ellipse_trajectory(radius_a, radius_b, steps, center_pose)` 方法使用参数方程生成椭圆轨迹的路径点。与8字形轨迹类似，它在以`center_pose`为中心的平面上绘制，并保持其姿态。参数方程（简化形式，theta 从 0 到 2*pi）：
+  - `y_local = radius_a * cos(theta)`
+  - `z_local = radius_b * sin(theta)`
+- **可视化**: 椭圆路径点同样会以不同颜色（如青绿色）发布到RViz。
+- **执行**: 规划和执行流程与8字形轨迹相同。
+
+### 3. 运行控制脚本
+脚本的`run()`方法按顺序执行以下操作：
+1. 移动到"准备"姿态。
+2. 更新轨迹中心位姿。
+3. 生成并执行8字形轨迹。
+4. （可选）移回准备姿态或中间姿态。
+5. 更新轨迹中心位姿。
+6. 生成并执行椭圆轨迹。
+7. 移动到"Home"关节姿态（所有关节角度为0）。
+
+确保在运行此脚本前，`demo.launch`（RViz和MoveIt环境）已经启动。
 
 ## 构建并运行
 
@@ -322,7 +363,7 @@ rosrun iiwa7_control trajectory_control.py
 
 1. **初始化**：脚本首先初始化了MoveIt的各种组件，包括RobotCommander、PlanningSceneInterface和MoveGroupCommander，这些组件用于和MoveIt框架交互。同时设置规划时间限制为15秒，比默认的5秒要长，有助于复杂路径的规划。
 
-2. **位姿控制**：使用`go_to_pose_goal`方法实现末端执行器位姿的控制，可以指定空间中的位置和姿态。
+2. **位姿控制**：使用`go_to`方法实现末端执行器位姿的控制，可以指定空间中的位置和姿态。
 
 3. **笛卡尔路径规划**：使用`plan_cartesian_path`方法规划笛卡尔路径，通过指定一系列中间点位来生成轨迹。它接收三个参数：
    - `waypoints`：路径点列表
