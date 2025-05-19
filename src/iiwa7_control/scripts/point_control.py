@@ -64,6 +64,44 @@ class PointControl:
         initial_state = self.move_group.get_current_state()
         rospy.loginfo("============ 初始当前状态: %s" % initial_state)
 
+        # 等待与PlanningSceneInterface建立连接
+        rospy.loginfo("等待连接到PlanningSceneInterface...")
+        rospy.wait_for_service('/get_planning_scene', timeout=10) # 等待服务可用
+        rospy.loginfo("成功连接到PlanningSceneInterface。")
+
+    def add_obstacle_box(self, name, pose_stamped, size=(0.1, 0.1, 0.1)):
+        """在规划场景中添加一个盒子障碍物。"""
+        self.scene.add_box(name, pose_stamped, size)
+        rospy.loginfo(f"添加障碍物 '{name}' 到规划场景。位置: {pose_stamped.pose.position}, 大小: {size}")
+        # 等待障碍物实际出现在场景中
+        # 这可以通过检查场景中是否包含该物体来实现
+        start_time = rospy.Time.now()
+        seconds_to_wait = 5.0 # 等待最多5秒
+        while (rospy.Time.now() - start_time).to_sec() < seconds_to_wait:
+            is_known = name in self.scene.get_known_object_names()
+            if is_known:
+                rospy.loginfo(f"障碍物 '{name}' 已成功添加到场景。")
+                return True
+            rospy.sleep(0.1)
+        rospy.logwarn(f"障碍物 '{name}' 添加超时，可能未在场景中显示。")
+        return False
+
+    def remove_obstacle(self, name):
+        """从规划场景中移除一个障碍物。"""
+        self.scene.remove_world_object(name)
+        rospy.loginfo(f"已发送移除障碍物 '{name}' 的请求。")
+        # 等待障碍物从场景中移除
+        start_time = rospy.Time.now()
+        seconds_to_wait = 5.0 # 等待最多5秒
+        while (rospy.Time.now() - start_time).to_sec() < seconds_to_wait:
+            is_known = name in self.scene.get_known_object_names()
+            if not is_known:
+                rospy.loginfo(f"障碍物 '{name}' 已成功从场景中移除。")
+                return True
+            rospy.sleep(0.1)
+        rospy.logwarn(f"障碍物 '{name}' 移除超时，可能仍存在于场景中。")
+        return False
+
     def move_J(self, joint_goal_array):
         """控制机械臂移动到指定的目标关节角度。
 
@@ -324,9 +362,21 @@ class PointControl:
         """
         根据用户提供的点列表执行空间点位控制
         """
+        rospy.loginfo("============ 清除场景中所有已存在的障碍物 ============")
+        # 先获取当前场景中所有已知障碍物的名称
+        known_object_names = self.scene.get_known_object_names()
+        if known_object_names:
+            rospy.loginfo(f"场景中发现已存在的障碍物: {known_object_names}。正在尝试清除...")
+            for obj_name in known_object_names:
+                self.remove_obstacle(obj_name) # 调用我们之前定义的remove_obstacle方法
+            rospy.loginfo("所有已存在的障碍物已尝试清除完毕。")
+            rospy.sleep(1.0) # 等待场景更新
+        else:
+            rospy.loginfo("场景中无已存在的障碍物，无需清除。")
+
         # (与run_demo类似，首先确保机器人不在奇异位姿)
         rospy.loginfo("============ 移动到初始准备关节姿态 (自定义点位前) ============")
-        ready_joint_angles = [0.0, np.deg2rad(20), 0.0, np.deg2rad(-70), 0.0, np.deg2rad(90), 0.0]
+        ready_joint_angles = [0.0, np.deg2rad(-15), 0.0, np.deg2rad(-90), 0.0, np.deg2rad(90), 0.0]
         if not self.move_J(ready_joint_angles):
             rospy.logerr("移动到准备姿态失败 (自定义点位)，中止。")
             return
@@ -348,7 +398,7 @@ class PointControl:
                         f"{center.orientation.w:.3f})")
 
         # 定义六边形参数 (半径)
-        radius = 0.15    # 六边形半径 (米)，也等于边长。
+        radius = 0.2    # 六边形半径 (米)，也等于边长。
         
         # 末端执行器在每个顶点的姿态将与初始获取的姿态一致
         eef_msg = center.orientation
@@ -417,25 +467,86 @@ class PointControl:
         # 在这里显示自定义路径的Marker
         self.show_path(waypoints)
 
-        rospy.loginfo("============ 规划自定义笛卡尔路径 ============")
-        plan, fraction = self.plan_cartesian_path(waypoints)
-        rospy.loginfo("规划成功比例: %.2f" % fraction)
+        rospy.loginfo("============ 规划自定义笛卡尔路径 (无障碍物) ============")
+        plan_no_obs, fraction_no_obs = self.plan_cartesian_path(copy.deepcopy(waypoints)) # 使用深拷贝以防修改
+        rospy.loginfo("无障碍物时规划成功比例: %.2f" % fraction_no_obs)
 
-        if fraction < 0.9:
-            rospy.logwarn("警告: 自定义路径规划不完整 (成功比例 < 0.9)。")
+        if fraction_no_obs < 0.9:
+            rospy.logwarn("警告: 无障碍物时路径规划不完整 (成功比例 < 0.9)。")
 
-        display_trajectory = moveit_msgs.msg.DisplayTrajectory()
-        display_trajectory.trajectory_start = self.robot.get_current_state()
-        display_trajectory.trajectory.append(plan)
-        self.display_trajectory_publisher.publish(display_trajectory)
-        rospy.sleep(2.0)
+        display_trajectory_no_obs = moveit_msgs.msg.DisplayTrajectory()
+        display_trajectory_no_obs.trajectory_start = self.robot.get_current_state()
+        display_trajectory_no_obs.trajectory.append(plan_no_obs)
+        self.display_trajectory_publisher.publish(display_trajectory_no_obs)
+        rospy.loginfo("完成publish无障碍物时的轨迹用于Rviz可视化。按回车键执行...")
+        input()
         
-        rospy.loginfo("============ 正在执行自定义轨迹 ============")
-        if fraction > 0.01:
-            success = self.execute_plan(plan)
-            rospy.loginfo("自定义轨迹执行 " + ("成功" if success else "失败"))
+        rospy.loginfo("============ 正在执行自定义轨迹 (无障碍物) ============")
+        if fraction_no_obs > 0.01:
+            success_no_obs = self.execute_plan(plan_no_obs)
+            rospy.loginfo("无障碍物时自定义轨迹执行 " + ("成功" if success_no_obs else "失败"))
         else:
-            rospy.loginfo("自定义轨迹规划成功比例过低，不执行。")
+            rospy.loginfo("无障碍物时自定义轨迹规划成功比例过低，不执行。")
+        
+        rospy.loginfo("无障碍物演示完成。按回车键添加障碍物并继续...")
+        input()
+
+        # 添加障碍物
+        obstacle_name = "obstacle_box"
+        obstacle_pose = geometry_msgs.msg.PoseStamped()
+        obstacle_pose.header.frame_id = self.planning_frame
+        
+        # 计算障碍物位置，这里参考点是六边形前两个点的中点
+        # 我们需要确保waypoints至少有两个点
+        if len(waypoints) >= 2:
+            p0 = waypoints[0].position
+            p1 = waypoints[1].position
+            obstacle_pose.pose.position.x = (p0.x + p1.x) / 2 - 0.2
+            obstacle_pose.pose.position.y = (p0.y + p1.y) / 2 + 0.2
+            obstacle_pose.pose.position.z = (p0.z + p1.z) / 2
+            obstacle_pose.pose.orientation.w = 1.0 # 默认方向
+            obstacle_size = (0.2, 0.05, 0.1) # 障碍物尺寸 (x,y,z) - 细长的盒子
+            
+            # 添加障碍物前先确保它不存在，避免重复添加的错误
+            if obstacle_name in self.scene.get_known_object_names():
+                self.remove_obstacle(obstacle_name)
+                rospy.sleep(0.5) # 等待移除完成
+
+            self.add_obstacle_box(obstacle_name, obstacle_pose, obstacle_size)
+            rospy.sleep(1.0) # 给场景一些时间更新
+        else:
+            rospy.logwarn("路径点不足2个，无法计算障碍物位置。")
+
+
+        rospy.loginfo("============ 规划自定义笛卡尔路径 (有障碍物) ============")
+        plan_obs, fraction_obs = self.plan_cartesian_path(copy.deepcopy(waypoints)) # 再次使用深拷贝
+        rospy.loginfo("有障碍物时规划成功比例: %.2f" % fraction_obs)
+
+        if fraction_obs < 0.9: # 即使有障碍物，也可能规划出部分路径
+            rospy.logwarn("警告: 有障碍物时路径规划不完整 (成功比例 < 0.9)。机械臂可能不会按预期移动或无法完全避开。")
+            if fraction_obs < 0.01: # 如果完全无法规划
+                 rospy.logerr("错误: 有障碍物时无法规划任何有效路径！")
+
+        display_trajectory_obs = moveit_msgs.msg.DisplayTrajectory()
+        display_trajectory_obs.trajectory_start = self.robot.get_current_state() # 注意：此时的current_state可能是无障碍执行后的状态
+        display_trajectory_obs.trajectory.append(plan_obs)
+        self.display_trajectory_publisher.publish(display_trajectory_obs)
+        rospy.loginfo("已发布有障碍物时的轨迹用于Rviz可视化。按回车键执行...")
+        input()
+        
+        rospy.loginfo("============ 正在执行自定义轨迹 (有障碍物) ============")
+        if fraction_obs > 0.01:
+            success_obs = self.execute_plan(plan_obs)
+            rospy.loginfo("有障碍物时自定义轨迹执行 " + ("成功" if success_obs else "失败"))
+        else:
+            rospy.loginfo("有障碍物时自定义轨迹规划成功比例过低或无法规划，不执行。")
+
+        # 清理障碍物
+        if obstacle_name in self.scene.get_known_object_names():
+            self.remove_obstacle(obstacle_name)
+            rospy.sleep(0.5) # 给场景一些时间更新
+
+        rospy.loginfo("避障演示完成。")
 
 
 def main():
