@@ -1,4 +1,6 @@
 <launch>
 	<!-- Define MoveIt controller manager plugin -->
 	<param name="moveit_controller_manager" value="moveit_ros_control_interface::MoveItControllerManager" />
+	<!-- Tell MoveIt where the controller_manager is -->
+	<param name="ros_control_namespace" value="/iiwa" />
 </launch>

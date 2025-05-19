@@ -599,3 +599,387 @@ $$ V_{world,i} = T_{world\_from\_local} \cdot V_{local,i} $$
 **6. 最终的路径点**
 
 每个计算出的世界坐标顶点 $(x_{world,i}, y_{world,i}, z_{world,i})$ 与最初捕获的末端执行器世界姿态四元数 $Q_{ee\_world}$ (作为目标姿态) 一起，构成了一个完整的路径点 (`geometry_msgs.msg.Pose` 对象)，用于后续的笛卡尔路径规划。
+
+# MoveIt + Gazebo 联合仿真配置
+
+为了在Gazebo中对`iiwa7`机械臂进行仿真并通过MoveIt进行控制，我们需要进行以下配置：
+
+## 1. URDF配置检查
+
+确保URDF文件 (`iiwa7.urdf`) 包含Gazebo仿真所需的元素：
+- **`<transmission>` 标签**: 为每个非固定关节定义传动装置。这对于`ros_control`与Gazebo的硬件接口进行交互至关重要。
+  ```xml
+  <transmission name="iiwa_tran_1">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="iiwa_joint_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface> <!-- 或者 VelocityJointInterface, EffortJointInterface -->
+    </joint>
+    <actuator name="iiwa_motor_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <!-- 为其他关节重复此操作 -->
+  ```
+  > `iiwa7.urdf` 文件中已包含适用于 `PositionJointInterface` 的 `transmission` 标签。
+
+- **Gazebo插件**: 包括用于物理属性、传感器和`ros_control`的插件。
+  ```xml
+  <gazebo>
+    <plugin name="gazebo_ros_control" filename="libgazebo_ros_control.so">
+      <robotNamespace>/iiwa</robotNamespace> <!-- 与控制器和话题的命名空间匹配 -->
+    </plugin>
+  </gazebo>
+  ```
+  > `iiwa7.urdf` 文件中已包含此插件。
+
+## 2. 创建控制器配置文件
+
+在 `iiwa7_moveit_config/config` 目录下创建一个名为 `controllers.yaml` 的文件。这个文件定义了 `ros_control` 将要加载的控制器类型和控制的关节。
+
+[`iiwa7_moveit_config/config/controllers.yaml`](./src/iiwa7_moveit_config/config/controllers.yaml):
+```yaml
+# MoveIt使用的上层轨迹控制器控制参数
+iiwa_arm_controller:
+  type: position_controllers/JointTrajectoryController # 或者 effort_controllers/JointTrajectoryController 等
+  joints:
+    - iiwa_joint_1
+    - iiwa_joint_2
+    - iiwa_joint_3
+    - iiwa_joint_4
+    - iiwa_joint_5
+    - iiwa_joint_6
+    - iiwa_joint_7
+  gains: # 根据需要调整PID增益
+    iiwa_joint_1: {p: 100, d: 1, i: 1, i_clamp: 1}
+    iiwa_joint_2: {p: 100, d: 1, i: 1, i_clamp: 1}
+    iiwa_joint_3: {p: 100, d: 1, i: 1, i_clamp: 1}
+    iiwa_joint_4: {p: 100, d: 1, i: 1, i_clamp: 1}
+    iiwa_joint_5: {p: 100, d: 1, i: 1, i_clamp: 1}
+    iiwa_joint_6: {p: 100, d: 1, i: 1, i_clamp: 1}
+    iiwa_joint_7: {p: 100, d: 1, i: 1, i_clamp: 1}
+
+# Gazebo仿真参数，自行调整，下面是一个示例
+gazebo_ros_control:
+  pid_gains:
+    iiwa_joint_1: {p: 100, i: 0, d: 1}
+    iiwa_joint_2: {p: 100, i: 0, d: 1}
+    iiwa_joint_3: {p: 100, i: 0, d: 1}
+    iiwa_joint_4: {p: 100, i: 0, d: 1}
+    iiwa_joint_5: {p: 100, i: 0, d: 1}
+    iiwa_joint_6: {p: 100, i: 0, d: 1}
+    iiwa_joint_7: {p: 100, i: 0, d: 1}
+
+joint_state_controller:
+  type: joint_state_controller/JointStateController
+  publish_rate: 50
+```
+
+### 理解 `controllers.yaml` 中的两组PID参数
+
+你可能注意到 `controllers.yaml` 文件中定义了两组看起来相似的PID（或PD）增益参数，它们分别位于 `iiwa_arm_controller` 下的 `gains` 和 `gazebo_ros_control` 下的 `pid_gains`。这两组参数服务于ROS控制栈的不同层面，通常需要独立调整，其值也无需保持一致：
+
+1.  **`iiwa_arm_controller/gains`**:
+    *   **作用对象**: 这些增益是为 `ros_control` 框架中的上层控制器（在此例中是 `position_controllers/JointTrajectoryController`，即 `iiwa_arm_controller`）配置的。
+    *   **控制目标**: `JointTrajectoryController` 负责接收一个期望的关节轨迹（包含时间戳、位置、可能还有速度和加速度），并根据这条轨迹计算出在每个控制周期应该发送给"底层硬件"（在仿真中即 `gazebo_ros_control` 插件）的指令。对于 `PositionJointInterface`，它会发送期望的关节位置。
+    *   **影响**: 这组 `gains` 主要影响 `JointTrajectoryController` 如何跟踪输入的目标轨迹，如何平滑地在轨迹段之间过渡，以及如何响应跟踪误差来生成这些发送给底层的指令。如果底层（Gazebo的PID）已经能很好地跟踪位置，这组参数的影响可能不那么直接，但对于整体轨迹的平顺性和动态响应仍有作用。
+    *   **注释中的 `i: 1`**: 在你当前 `README.md` 示例的 `iiwa_arm_controller` 的 `gains` 中，`i`（积分项）被设为 `1`。在实际的 `controllers.yaml` 文件中，我们已经将其设为 `0`。通常建议将积分项设为 `0` 开始调试，以避免积分饱和问题，尤其是在位置控制模式下。
+
+2.  **`gazebo_ros_control/pid_gains`**:
+    *   **作用对象**: 这些 `pid_gains` 是专门为 Gazebo 中的 `gazebo_ros_control` 插件配置的。
+    *   **控制目标**: 当上层的 `JointTrajectoryController` 通过 `PositionJointInterface` 向 Gazebo 中的模拟关节发送一个目标位置时，`gazebo_ros_control` 插件会利用**这些PID增益**在 Gazebo 的物理引擎中施加计算出的力或扭矩，以驱动模拟关节达到并稳定地保持在该目标位置。它们直接模拟了真实机器人硬件底层伺服控制器的行为。
+    *   **影响**: 这组PID参数直接决定了机器人在Gazebo仿真环境中的"物理"表现：关节的刚度（P）、阻尼（D）、对外部扰动（如重力、碰撞）的抵抗能力，以及对目标指令的响应速度和稳定性。如果这些值不当，机器人模型在仿真中可能会显得"软弱"、抖动、过冲或振荡，即使上层控制器发送了完美的指令。Gazebo控制台通常会在缺少这些参数时报告 "No p gain specified for pid..."。
+
+**总结与调优**:
+
+*   **`gazebo_ros_control/pid_gains` 是基础**: 通常应首先调整这些参数，确保机器人在Gazebo中能够稳定地保持姿态，并且对单个目标点的响应良好（不过冲、不振荡、能抵抗重力）。这是实现良好仿真效果的基石。
+*   **`iiwa_arm_controller/gains` 负责轨迹跟踪**: 在底层Gazebo PID调优良好的基础上，如果轨迹跟踪的动态性能（如快速运动时的滞后、轨迹段切换时的平滑度）仍需改善，可以再调整 `JointTrajectoryController` 自身的 `gains`。
+*   **独立调整**: 由于它们的目标和运行环境不同，这两组参数的最佳值通常是不同的，需要分别进行调优。
+
+通过这样的分层控制和参数配置，MoveIt才能在Gazebo仿真环境中实现精确和稳定的机械臂运动控制。
+
+## 3. 创建Gazebo启动文件
+
+在 `iiwa7_moveit_config/launch` 目录下创建一个名为 `iiwa7_gazebo.launch` 的文件。此文件将启动Gazebo，加载机器人模型，并启动控制器。
+
+[`iiwa7_moveit_config/launch/iiwa7_gazebo.launch`](./src/iiwa7_moveit_config/launch/iiwa7_gazebo.launch):
+```xml
+<launch>
+  <!-- Gazebo arguments -->
+  <arg name="paused" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="gui" default="true"/>
+  <arg name="headless" default="false"/>
+  <arg name="debug" default="false"/>
+  <arg name="world_name" default="worlds/empty.world"/>
+
+  <!-- Startup Gazebo server and client -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world_name)"/>
+    <arg name="debug" value="$(arg debug)" />
+    <arg name="gui" value="$(arg gui)" />
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="headless" value="$(arg headless)"/>
+  </include>
+
+  <!-- Load the URDF into the ROS Parameter Server -->
+  <param name="robot_description" command="$(find xacro)/xacro '''$(find differentiable-robot-model)/diff_robot_data/kuka_iiwa/urdf/iiwa7.urdf'''" />
+
+  <!-- Run a python script to send a service call to gazebo_ros to spawn a URDF robot -->
+  <node name="urdf_spawner" pkg="gazebo_ros" type="spawn_model" respawn="false" output="screen"
+        args="-urdf -model iiwa7 -param robot_description -x 0 -y 0 -z 0.1"/>
+
+  <!-- Load joint controller configurations from YAML file to parameter server -->
+  <rosparam file="$(find iiwa7_moveit_config)/config/controllers.yaml" command="load" ns="/iiwa" />
+
+  <!-- Load the controllers (load + start) -->
+  <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
+    output="screen" ns="/iiwa" args="iiwa_arm_controller joint_state_controller"/>
+    
+  <!-- Robot State Publisher -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" respawn="true" output="screen">
+      <param name="publish_frequency" type="double" value="50.0" />
+      <param name="tf_prefix" type="string" value="" />
+  </node>
+
+  <!-- Relay /iiwa/joint_states to global /joint_states so MoveIt can consume -->
+  <node name="joint_states_relay" pkg="topic_tools" type="relay" args="/iiwa/joint_states /joint_states" output="screen" />
+
+</launch> 
+```
+
+## 4. 启动MoveIt与Gazebo集成
+
+MoveIt的 `demo.launch` 文件 (位于 `iiwa7_moveit_config/launch/`) 通常有一个参数用于指定控制器管理器。为了连接到Gazebo中通过 `ros_control` 管理的控制器，我们需要将此参数设置为 `ros_control`。
+
+启动流程:
+1.  **编译工作空间**:
+    ```bash
+    cd ~/workspace/ws_moveit
+    catkin build
+    source devel/setup.bash
+    ```
+2.  **启动Gazebo和控制器**:
+    在一个新的终端中运行：
+    ```bash
+    roslaunch iiwa7_moveit_config iiwa7_gazebo.launch
+    ```
+    Gazebo 将会启动，并且机器人模型会被加载和生成。
+
+3.  **启动MoveIt (连接到Gazebo)**:
+    在另一个新的终端中运行：
+    ```bash
+    roslaunch iiwa7_moveit_config demo.launch moveit_controller_manager:=ros_control
+    ```
+    这将启动MoveIt的 `move_group` 节点和RViz。在RViz中，确保 "Fixed Frame" 设置为 `world` 或 `iiwa_link_0` (或你URDF中定义的基座链接)，并且 "MotionPlanning" 显示插件的 "Planning Scene Topic" 设置为 `/move_group/monitored_planning_scene`（通常是默认值）。
+
+# 使用MoveIt API控制Gazebo中的机械臂
+
+在成功启动Gazebo和MoveIt之后，你之前为RViz虚拟控制编写的Python脚本 (`point_control.py`, `trajectory_control.py`) 现在可以用来控制在Gazebo中仿真的机械臂。
+
+确保脚本中使用的 `MoveGroupCommander` 的 `group_name` (例如, "manipulator") 与你在MoveIt Setup Assistant中配置的规划组名称一致。
+
+## 运行控制脚本
+
+1.  确保Gazebo和MoveIt已经按照上一节的说明启动。
+2.  打开一个新的终端。
+3.  `source` 工作空间：
+    ```bash
+    source ~/workspace/ws_moveit/devel/setup.bash
+    ```
+4.  运行你的Python控制脚本：
+    ```bash
+    # 例如，运行点位控制脚本
+    rosrun iiwa7_control point_control.py
+
+    # 或者，运行轨迹控制脚本
+    rosrun iiwa7_control trajectory_control.py
+    ```
+    机械臂现在应该在Gazebo环境中根据脚本指令运动。
+
+## Gazebo控制效果
+
+(这部分可以后续补充Gazebo中的截图)
+
+- **点位控制**: 机械臂末端在Gazebo中按顺序到达预定义点。
+- **轨迹控制**: 机械臂末端在Gazebo中绘制8字形和椭圆轨迹。
+- **避障**: 如果在Gazebo环境中添加障碍物（可以通过Gazebo的GUI或服务调用添加），并重新运行包含避障逻辑的脚本，MoveIt将规划并执行避开这些物理障碍物的路径。
+
+# Gazebo 联合仿真常见问题与关键修改（总结）
+
+> 下面汇总本次在 **Gazebo + MoveIt** 联合仿真中遇到的主要问题及对应修改，方便后续复现或排查。配置文件路径均相对于 `~/workspace/ws_moveit/`。
+
+## 1. 机械臂在 Gazebo 中倒塌
+- **现象**：启动 Gazebo 后，机械臂模型整体因重力下落，导致后续运动规划与执行立即失败或与预期严重不符。
+- **原因**：URDF 中定义的机器人基座连杆（例如 `iiwa_link_0`）没有被固定到 Gazebo 的世界坐标系 (`world`)。
+- **解决**：在机器人 URDF 文件 (`src/differentiable-robot-model/diff_robot_data/kuka_iiwa/urdf/iiwa7.urdf`) 的末尾（但在 `</robot>` 标签之前）添加一个固定的 `world` 连杆和一个连接 `world` 与机器人基座连杆的固定关节。
+  ```xml
+  <!-- Define a static world link -->
+  <link name="world"/>
+
+  <!-- Fix the robot's base_link to the world link -->
+  <joint name="world_joint" type="fixed">
+    <parent link="world"/>
+    <child link="iiwa_link_0"/> <!-- 替换为你的机器人实际的基座连杆名称 -->
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  ```
+  **注意**: 如果你的 MoveIt 配置包 (`.srdf` 文件) 中已存在一个连接 `world` 和基座的虚拟关节 (virtual_joint)，例如:
+  `<virtual_joint name="virtual_joint" type="fixed" parent_frame="world" child_link="iiwa_link_0" />`
+  这个虚拟关节主要服务于 MoveIt 的规划场景。为了 Gazebo 中的物理固定，上述 URDF 修改仍然是必要的。两者可以共存。
+
+## 2. Gazebo 控制器报错 `No p gain specified for pid` / Controller fails to load
+- **现象**：Gazebo 启动时，控制台反复打印针对每个关节的 "No p gain specified for pid" 类似错误，导致 `gazebo_ros_control` 插件无法正确加载或初始化 `JointTrajectoryController`。
+- **原因**：`gazebo_ros_control` 插件（特别是用于 `PositionJointInterface` 或 `VelocityJointInterface` 的控制器）期望在 ROS 参数服务器上找到每个受控关节的 PID 增益。这些参数需要在 `gazebo_ros_control` 插件自身查找的特定命名空间下。
+- **解决**：
+    1.  **URDF 配置**: 确保你的 URDF (`iiwa7.urdf`) 中 `<gazebo>` 插件和 `<transmission>` 标签内都指定了正确的 `<robotNamespace>` (例如 `/iiwa`)。
+        ```xml
+        <!-- In URDF, inside <robot> tag -->
+        <gazebo>
+          <plugin filename="libgazebo_ros_control.so" name="gazebo_ros_control">
+            <robotNamespace>/iiwa</robotNamespace> <!-- 确保与 controllers.yaml 加载和控制器启动的命名空间一致 -->
+          </plugin>
+        </gazebo>
+
+        <!-- Example for one transmission block, repeat for all non-fixed joints -->
+        <transmission name="iiwa_tran_1">
+          <robotNamespace>/iiwa</robotNamespace> <!-- Crucial for PID gain lookup -->
+          <type>transmission_interface/SimpleTransmission</type>
+          <joint name="iiwa_joint_1">
+            <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+          </joint>
+          <actuator name="iiwa_motor_1">
+            <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+            <mechanicalReduction>1</mechanicalReduction>
+          </actuator>
+        </transmission>
+        ```
+    2.  **控制器配置文件 (`controllers.yaml`)**: 在 `src/iiwa7_moveit_config/config/controllers.yaml` 文件中，为 `gazebo_ros_control` 添加 `pid_gains`。这些参数需要通过 `rosparam load` 命令加载到与 URDF 中 `<robotNamespace>` 匹配的命名空间下 (见 `iiwa7_gazebo.launch` 的修改)。
+        ```yaml
+        # src/iiwa7_moveit_config/config/controllers.yaml
+
+        # Controllers for MoveIt (these gains are primarily for ros_control's JointTrajectoryController itself)
+        iiwa_arm_controller:
+          type: position_controllers/JointTrajectoryController
+          joints:
+            - iiwa_joint_1 # ... and other joints
+            # ...
+          gains: # Optional: Default gains for the controller, can be overridden by gazebo_ros_control specifics
+            iiwa_joint_1: {p: 100, d: 1, i: 0, i_clamp: 1}
+            # ...
+
+        # Specific PID gains for Gazebo simulation, loaded under <robotNamespace>/gazebo_ros_control/pid_gains/
+        gazebo_ros_control:
+          pid_gains:
+            iiwa_joint_1: {p: 100, i: 0, d: 10} # Initial P, I, D values. Tune as needed.
+            iiwa_joint_2: {p: 100, i: 0, d: 10}
+            # ... repeat for all 7 joints
+            iiwa_joint_7: {p: 100, i: 0, d: 10}
+
+        joint_state_controller:
+          type: joint_state_controller/JointStateController
+          publish_rate: 50
+        ```
+    3.  **Gazebo 启动文件 (`iiwa7_gazebo.launch`)**: 确保 `controllers.yaml` 加载到正确的命名空间。
+        ```xml
+        <!-- src/iiwa7_moveit_config/launch/iiwa7_gazebo.launch -->
+        <!-- Load joint controller configurations from YAML file to parameter server -->
+        <!-- Note the ns="/iiwa" attribute -->
+        <rosparam file="$(find iiwa7_moveit_config)/config/controllers.yaml" command="load" ns="/iiwa" />
+
+        <!-- Load the controllers, also under the /iiwa namespace -->
+        <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
+              output="screen" ns="/iiwa" args="iiwa_arm_controller joint_state_controller"/>
+        ```
+- **调优建议**:
+    - `i` (积分项) 通常建议在初始调试时设为 `0`，以避免积分饱和问题。
+    - `p` (比例项) 和 `d` (微分项) 需要根据机器人实际表现进行调整。对于 KUKA iiwa，常见的起始值范围： `p` 在 100 到 800 之间，`d` 在 1 到 30 之间。如果机器人抖动，尝试增加 `d`；如果响应慢或有静差，尝试增加 `p`。
+
+## 3. Gazebo 警告 `<hardwareInterface>` 语法已弃用 / Deprecated syntax for `<hardwareInterface>`
+- **现象**：Gazebo 启动时或加载 URDF 时，日志中出现关于 `<hardwareInterface>` 标签语法已弃用的警告，提示缺少 `hardware_interface/` 前缀。
+- **原因**：较新版本的 `ros_control` 和 `gazebo_ros_control` 要求 `hardwareInterface` 标签的内容包含完整的接口类型名称，例如 `hardware_interface/PositionJointInterface`。
+- **解决**：编辑 URDF 文件 (`iiwa7.urdf`)，在所有 `<transmission>` 标签内部的 `<joint>` 和 `<actuator>` 的 `<hardwareInterface>` 标签中，为其内容添加 `hardware_interface/` 前缀。
+  **修改前示例**:
+  ```xml
+  <hardwareInterface>PositionJointInterface</hardwareInterface>
+  ```
+  **修改后示例**:
+  ```xml
+  <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+  ```
+  确保对 URDF 中所有相关的 `<hardwareInterface>` 都进行此修改。
+
+## 4. MoveIt 执行失败: `Unable to identify any set of controllers` / `CONTROL_FAILED`
+- **现象**：在 RViz 中使用 MoveIt 进行运动规划（Plan）看起来成功，但在尝试执行（Execute）时，MoveIt 界面或终端报错 "Unable to identify any set of controllers for group..." 或 "Action failed: CONTROL_FAILED"。
+- **原因**：MoveIt 的控制器管理器 (`moveit_ros_control_interface::MoveItControllerManager`) 默认在根命名空间 (`/`) 下查找 `controller_manager` 服务（如 `query_controller_states`）。如果 Gazebo 中的控制器（由 `gazebo_ros_control` 管理）实际运行在一个子命名空间下（例如 `/iiwa`），MoveIt 将无法找到它们。
+- **解决**：需要告知 MoveIt 控制器实际所在的命名空间。修改 `iiwa7_moveit_config/launch/ros_control_moveit_controller_manager.launch.xml` (此文件通常由 `demo.launch` 或 `move_group.launch` 包含):
+  ```xml
+  <!-- src/iiwa7_moveit_config/launch/ros_control_moveit_controller_manager.launch.xml -->
+  <launch>
+    <!-- Define MoveIt controller manager plugin -->
+    <param name="moveit_controller_manager" value="moveit_ros_control_interface::MoveItControllerManager" />
+
+    <!-- Tell MoveIt where the controller_manager services are running -->
+    <!-- This should match the namespace used in gazebo_ros_control plugin and controller_spawner -->
+    <param name="ros_control_namespace" value="/iiwa" />
+  </launch>
+  ```
+
+## 5. MoveIt 无法获取当前机器人状态 / `Failed to fetch current robot state`
+- **现象**：MoveIt 启动时或 Python 控制脚本尝试连接 `MoveGroupCommander` 时，出现 "Failed to fetch current robot state" 或类似错误，导致无法获取到机器人的实时关节状态。场景中的机器人模型可能停留在初始姿态。
+- **原因**：`joint_state_controller` (在 `/iiwa` 命名空间下运行) 将关节状态发布到带命名空间的话题 `/iiwa/joint_states`。然而，MoveIt (`move_group` 节点) 以及 `robot_state_publisher` (如果未特别配置) 默认监听根命名空间下的 `/joint_states` 话题。
+- **解决**：在 Gazebo 的启动文件 (`iiwa7_gazebo.launch`) 中添加一个 `topic_tools/relay` 节点，将带命名空间的 `/iiwa/joint_states` 话题内容转发到根命名空间的 `/joint_states` 话题。
+  ```xml
+  <!-- src/iiwa7_moveit_config/launch/iiwa7_gazebo.launch -->
+  <!-- ... (other nodes like urdf_spawner, controller_spawner) ... -->
+
+  <!-- Robot State Publisher (listens to /joint_states by default) -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" respawn="true" output="screen">
+      <param name="publish_frequency" type="double" value="50.0" />
+      <!-- <param name="tf_prefix" type="string" value="" /> --> <!-- Typically not needed if base_link is iiwa_link_0 -->
+  </node>
+
+  <!-- Relay /iiwa/joint_states to global /joint_states so MoveIt and robot_state_publisher can consume -->
+  <node name="joint_states_relay" pkg="topic_tools" type="relay"
+        args="/iiwa/joint_states /joint_states" output="screen"/>
+  ```
+  **确保**: `robot_state_publisher` 也在你的 Gazebo 启动文件中运行，并且它能正确订阅到最终的 `/joint_states` 话题。
+
+## 6. 运动执行时控制器报错 `GOAL_TOLERANCE_VIOLATED`
+- **现象**：机械臂尝试执行轨迹，但在到达目标点之前或之后不久，控制台（通常是运行 `move_group` 的终端）出现 `*_trajectory_controller: Goal Torelance Violated` 错误，MoveIt 报告执行失败。
+- **原因**：这通常意味着控制器无法在规定的容差内精确地达到或维持目标关节位置。可能的原因包括：
+    - PID 参数仍然不够优化（尤其是 `p` 和 `d`）。
+    - 期望的轨迹对于当前 PID 设置来说过于激进（速度或加速度过大）。
+    - Gazebo 仿真物理特性（如关节阻尼、摩擦）与控制器期望不符。
+    - 关节本身的目标容差 (`goal` constraint) 或停止速度容差 (`stopped_velocity_tolerance`) 设置过于严格。
+- **解决与调优建议**：
+    1.  **PID 进一步调优**: 这是首要步骤。参考问题2中的 PID 调优建议，耐心调整 `p` 和 `d` 值。
+    2.  **检查轨迹平滑性**: 如果是自定义轨迹，确保其平滑且在机器人动力学能力范围内。
+    3.  **调整控制器容差 (在 `controllers.yaml` 中)**: 在 `src/iiwa7_moveit_config/config/controllers.yaml` 中，可以为 `iiwa_arm_controller` 添加或调整 `constraints` 部分。
+        ```yaml
+        # src/iiwa7_moveit_config/config/controllers.yaml
+        iiwa_arm_controller:
+          type: position_controllers/JointTrajectoryController
+          joints: # ...
+          # gains: # ...
+          constraints:
+            stopped_velocity_tolerance: 0.05      # 默认可能是 0.01 rad/s。适当放宽有助于避免因微小震荡误报。
+            goal_time: 0.5                         # 到达目标点后，允许0.5秒的稳定时间。默认可能是0。
+            # Per-joint goal tolerance (radians)
+            iiwa_joint_1: {trajectory: 0.05, goal: 0.02} # trajectory是路径点容差，goal是最终点容差
+            iiwa_joint_2: {trajectory: 0.05, goal: 0.02}
+            # ... repeat for all 7 joints
+            iiwa_joint_7: {trajectory: 0.05, goal: 0.02}
+        ```
+        **注意**: 这些容差值需要根据你的具体应用需求来设定。过度放宽可能导致精度下降。
+    4.  **检查 URDF 物理参数**: 虽然不常见，但如果 URDF 中的惯性参数、关节阻尼等与实际机器人差异过大，也可能影响控制稳定性。
+
+---
+
+**启动顺序建议**：
+1.  **编译**: `catkin build` (在 `~/workspace/ws_moveit/` 目录下)
+2.  **Source**: `source devel/setup.bash`
+3.  **启动 Gazebo 和控制器**: 在一个终端中运行 `roslaunch iiwa7_moveit_config iiwa7_gazebo.launch`
+4.  **启动 MoveIt**: 在另一个终端中运行 `roslaunch iiwa7_moveit_config demo.launch moveit_controller_manager:=ros_control`
+5.  **运行控制脚本 (可选)**: 在第三个终端中运行你的 Python 控制脚本 (例如 `rosrun iiwa7_control point_control.py`)。

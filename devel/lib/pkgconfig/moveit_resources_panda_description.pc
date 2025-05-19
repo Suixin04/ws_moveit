@@ -1,1 +1,0 @@
-/home/zhangtao/workspace/ws_moveit/devel/.private/moveit_resources_panda_description/lib/pkgconfig/moveit_resources_panda_description.pc

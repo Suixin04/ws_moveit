@@ -1,0 +1,33 @@
+iiwa_arm_controller:
+  type: position_controllers/JointTrajectoryController
+  joints:
+    - iiwa_joint_1
+    - iiwa_joint_2
+    - iiwa_joint_3
+    - iiwa_joint_4
+    - iiwa_joint_5
+    - iiwa_joint_6
+    - iiwa_joint_7
+  gains:
+    iiwa_joint_1: {p: 100, d: 1, i: 0, i_clamp: 1}
+    iiwa_joint_2: {p: 100, d: 1, i: 0, i_clamp: 1}
+    iiwa_joint_3: {p: 100, d: 1, i: 0, i_clamp: 1}
+    iiwa_joint_4: {p: 100, d: 1, i: 0, i_clamp: 1}
+    iiwa_joint_5: {p: 100, d: 1, i: 0, i_clamp: 1}
+    iiwa_joint_6: {p: 100, d: 1, i: 0, i_clamp: 1}
+    iiwa_joint_7: {p: 100, d: 1, i: 0, i_clamp: 1}
+
+# Gazebo PID gains required by gazebo_ros_control
+gazebo_ros_control:
+  pid_gains:
+    iiwa_joint_1: {p: 100, i: 1, d: 1}
+    iiwa_joint_2: {p: 100, i: 1, d: 1}
+    iiwa_joint_3: {p: 100, i: 1, d: 1}
+    iiwa_joint_4: {p: 100, i: 1, d: 1}
+    iiwa_joint_5: {p: 100, i: 1, d: 1}
+    iiwa_joint_6: {p: 100, i: 1, d: 1}
+    iiwa_joint_7: {p: 100, i: 1, d: 1}
+
+joint_state_controller:
+  type: joint_state_controller/JointStateController
+  publish_rate: 50 
