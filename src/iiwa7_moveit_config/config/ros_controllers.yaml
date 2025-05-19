@@ -1,0 +1,50 @@
+# Settings for ros_control control loop
+# publish_rate: 50 # Defaults to 50
+# controller_frequency is set in the controllers generating the commands
+
+
+# Settings for ros_control hardware interface
+# loop_hz: 300
+# cycle_time_error_threshold: 0.01
+
+
+# Settings for ros_control hardware interface
+# joint_state_controller:
+#   type: joint_state_controller/JointStateController
+#   publish_rate: 50
+
+
+# Joint Trajectory Controller for the arm
+# Follows the structure from moveit_simple_controller_manager
+# Make sure this controller name matches the one expected by MoveIt! (often in controllers.yaml or simple_moveit_controllers.yaml)
+# and the one spawned in the Gazebo launch file.
+arm_controller:
+  type: "position_controllers/JointTrajectoryController"
+  joints:
+    - iiwa_joint_1
+    - iiwa_joint_2
+    - iiwa_joint_3
+    - iiwa_joint_4
+    - iiwa_joint_5
+    - iiwa_joint_6
+    - iiwa_joint_7
+  constraints:
+    goal_time: 0.6 # Default constraint, can be overridden per trajectory
+    stopped_velocity_tolerance: 0.05 # Default constraint
+    # Individual joint constraints can also be added here if needed
+    # iiwa_joint_1:
+    #   trajectory: 0.1
+    #   goal: 0.05
+  # gains: # Not typically needed for position_controllers/JointTrajectoryController with PositionJointInterface in Gazebo
+    # iiwa_joint_1: {p: 100.0, i: 0.01, d: 1.0}
+    # iiwa_joint_2: {p: 100.0, i: 0.01, d: 1.0}
+    # ... for all joints
+  # state_publish_rate:  25 # Defaults to 50
+  # action_monitor_rate: 10 # Defaults to 20
+  # stop_trajectory_duration: 0.0 # Defaults to 0.0 (stop immediately)
+
+# It's also common practice to explicitly add the joint_state_controller here
+# even if it's often started by default by ros_control with Gazebo.
+joint_state_controller:
+  type: joint_state_controller/JointStateController
+  publish_rate: 50 # Hz
