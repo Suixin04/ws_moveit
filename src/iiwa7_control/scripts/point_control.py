@@ -374,6 +374,9 @@ class PointControl:
         else:
             rospy.loginfo("场景中无已存在的障碍物，无需清除。")
 
+        # 清除markers
+        self.clear_markers()
+        
         # (与run_demo类似，首先确保机器人不在奇异位姿)
         rospy.loginfo("============ 移动到初始准备关节姿态 (自定义点位前) ============")
         ready_joint_angles = [0.0, np.deg2rad(-15), 0.0, np.deg2rad(-90), 0.0, np.deg2rad(90), 0.0]
@@ -398,7 +401,7 @@ class PointControl:
                         f"{center.orientation.w:.3f})")
 
         # 定义六边形参数 (半径)
-        radius = 0.2    # 六边形半径 (米)，也等于边长。
+        radius = 0.18    # 六边形半径 (米)，也等于边长。
         
         # 末端执行器在每个顶点的姿态将与初始获取的姿态一致
         eef_msg = center.orientation
@@ -488,7 +491,16 @@ class PointControl:
         else:
             rospy.loginfo("无障碍物时自定义轨迹规划成功比例过低，不执行。")
         
-        rospy.loginfo("无障碍物演示完成。按回车键添加障碍物并继续...")
+        rospy.loginfo("无障碍物演示完成。按回车键回到初始位置并继续...")
+        input()
+
+        rospy.loginfo("============ 移动到初始准备关节姿态 (自定义点位前) ============")
+        ready_joint_angles = [0.0, np.deg2rad(-15), 0.0, np.deg2rad(-90), 0.0, np.deg2rad(90), 0.0]
+        if not self.move_J(ready_joint_angles):
+            rospy.logerr("移动到准备姿态失败 (自定义点位)，中止。")
+            return
+
+        rospy.loginfo("成功移动到准备姿态。接下来将展示添加障碍物后的路径规划...")
         input()
 
         # 添加障碍物
@@ -501,11 +513,11 @@ class PointControl:
         if len(waypoints) >= 2:
             p0 = waypoints[0].position
             p1 = waypoints[1].position
-            obstacle_pose.pose.position.x = (p0.x + p1.x) / 2 - 0.2
-            obstacle_pose.pose.position.y = (p0.y + p1.y) / 2 + 0.2
-            obstacle_pose.pose.position.z = (p0.z + p1.z) / 2
+            obstacle_pose.pose.position.x = (p0.x + p1.x) / 2 - 0.4
+            obstacle_pose.pose.position.y = (p0.y + p1.y) / 2 + 0.18
+            obstacle_pose.pose.position.z = (p0.z + p1.z) / 2 - 0
             obstacle_pose.pose.orientation.w = 1.0 # 默认方向
-            obstacle_size = (0.2, 0.05, 0.1) # 障碍物尺寸 (x,y,z) - 细长的盒子
+            obstacle_size = (0.2, 0.01, 0.2) # 障碍物尺寸 (x,y,z)
             
             # 添加障碍物前先确保它不存在，避免重复添加的错误
             if obstacle_name in self.scene.get_known_object_names():
