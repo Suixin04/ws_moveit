@@ -111,7 +111,7 @@ class TrajectoryControl:
         self.marker_publisher.publish(marker)
         rospy.loginfo(f"已发送清除 Marker 命令到命名空间: {ns}")
 
-    def show_trajectory_marker(self, waypoints_pose_list, ns="trajectory", r=1.0, g=0.0, b=0.0):
+    def show_path(self, waypoints_pose_list, ns="trajectory", r=1.0, g=0.0, b=0.0):
         """在RViz中将路径显示为LINE_STRIP Marker。
         在添加新Marker之前，会先清除该命名空间下的旧Markers。
         """
@@ -124,7 +124,7 @@ class TrajectoryControl:
         marker.header.frame_id = self.planning_frame
         marker.header.stamp = rospy.Time.now() # 可以使用与clear_marker相同的时间戳，或新的时间戳
         marker.ns = ns
-        marker.id = 0 # 新的marker也使用id 0 (或者其他你选择的ID)
+        marker.id = 0 # 新的marker也使用id 0 (或者其他ID)
         marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD
         marker.pose.orientation.w = 1.0
@@ -279,7 +279,7 @@ class TrajectoryControl:
             rospy.logerr("生成8字形轨迹失败。")
             return
 
-        self.show_trajectory_marker(figure_eight_waypoints, ns="figure_eight", r=1.0, g=0.5, b=0.0) # 橙色
+        self.show_path(figure_eight_waypoints, ns="figure_eight", r=1.0, g=0.5, b=0.0) # 橙色
         
         rospy.loginfo("规划8字形轨迹...")
         plan, fraction = self.plan_cartesian_path(figure_eight_waypoints)
@@ -304,7 +304,7 @@ class TrajectoryControl:
             rospy.logerr("生成椭圆轨迹失败。")
             return
 
-        self.show_trajectory_marker(ellipse_waypoints, ns="ellipse", r=0.0, g=1.0, b=0.5) # 青绿色
+        self.show_path(ellipse_waypoints, ns="ellipse", r=0.0, g=1.0, b=0.5) # 青绿色
 
         rospy.loginfo("规划椭圆轨迹...")
         plan, fraction = self.plan_cartesian_path(ellipse_waypoints)

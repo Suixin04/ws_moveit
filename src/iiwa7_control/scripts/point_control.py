@@ -15,7 +15,6 @@ from geometry_msgs.msg import Pose, Point, Quaternion
 from tf.transformations import quaternion_matrix, quaternion_from_euler
 from visualization_msgs.msg import Marker
 
-
 class PointControl:
     def __init__(self):
         """初始化Iiwa7PointToPointControl节点和MoveIt! Commander。
@@ -194,41 +193,45 @@ class PointControl:
             rospy.logerr("轨迹执行失败。")
         return success
 
-    def show_path(self, waypoints_pose_list):
-        """在RViz中将末端执行器路径显示为LINE_STRIP Marker."""
+    def clear_markers(self, ns="trajectory"):
+        """清除指定命名空间下的所有RViz Markers。"""
         marker = Marker()
         marker.header.frame_id = self.planning_frame
         marker.header.stamp = rospy.Time.now()
-        marker.ns = "eef_hexagon_path"
-        marker.id = 0    # 每个Marker的唯一ID
-        marker.type = Marker.LINE_STRIP # 线段绘制方式
-        marker.action = Marker.ADD # 添加Marker
+        marker.ns = ns
+        marker.id = 0 # 对于DELETEALL，id通常设为0，它会清除整个命名空间
+        marker.action = Marker.DELETEALL
+        self.marker_publisher.publish(marker)
+        rospy.loginfo(f"已发送清除 Marker 命令到命名空间: {ns}")
 
-        # Marker的姿态 (对于LINE_STRIP，通常设为单位姿态)
+    def show_path(self, waypoints_pose_list, ns="trajectory", r=1.0, g=0.0, b=0.0):
+        """在RViz中将路径显示为LINE_STRIP Marker。
+        在添加新Marker之前，会先清除该命名空间下的旧Markers。
+        """
+        # 1. 清除此命名空间中的旧Markers
+        self.clear_markers(ns)
+        # rospy.sleep(0.05) # 可选：短暂延时，确保RViz有时间处理删除命令
+
+        # 2. 创建并发布新的ADD Marker
+        marker = Marker()
+        marker.header.frame_id = self.planning_frame
+        marker.header.stamp = rospy.Time.now() # 可以使用与clear_marker相同的时间戳，或新的时间戳
+        marker.ns = ns
+        marker.id = 0 # 新的marker也使用id 0 (或者其他ID)
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
         marker.pose.orientation.w = 1.0
-
-        # 线条的宽度
-        marker.scale.x = 0.01  # 1cm宽
-
-        # 线条的颜色 (红色, RGBA)
-        marker.color.r = 1.0
-        marker.color.g = 0.0
-        marker.color.b = 0.0
-        marker.color.a = 0.7 # 不透明度
-
-        # Marker的生命周期 (rospy.Duration() 表示永久)
+        marker.scale.x = 0.015 # 线条宽度
+        marker.color.r = r
+        marker.color.g = g
+        marker.color.b = b
+        marker.color.a = 0.8 # 不透明度
         marker.lifetime = rospy.Duration()
 
-        # 填充路径点
-        for marker_attr in waypoints_pose_list:
-            # waypoints_pose_list包含的是Pose对象
-            p = Point()
-            p.x = marker_attr.position.x
-            p.y = marker_attr.position.y
-            p.z = marker_attr.position.z
-            marker.points.append(p)
+        for pose in waypoints_pose_list:
+            marker.points.append(pose.position)
         
-        rospy.loginfo(f"发布包含 {len(marker.points)} 个点的 EEF 路径 Marker 到 /eef_trajectory_marker")
+        rospy.loginfo(f"发布包含 {len(marker.points)} 个点的轨迹 Marker 到 /eef_trajectory_marker (ns: {ns})")
         self.marker_publisher.publish(marker)
 
     def run_demo(self):
